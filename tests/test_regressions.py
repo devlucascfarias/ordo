@@ -1,4 +1,4 @@
-"""Regressões de bugs corrigidos na CLI (encoding, Windows, janelas, sessões)."""
+"""Regression tests for fixed CLI bugs (encoding, Windows, windowing, search, sessions)."""
 import os
 import subprocess
 import sys
@@ -9,31 +9,31 @@ from ordo import cli, client
 from ordo.session import Session
 from ordo.textproc import window_file, window_log
 
-from test_cli import FakeModel, run  # noqa: F401  (fixtures compartilhadas)
+from test_cli import FakeModel, run  # noqa: F401  (shared fixtures)
 from test_cli import model, ordo_home  # noqa: F401
 
-WIN = pytest.mark.skipif(os.name != "nt", reason="específico do Windows")
+WIN = pytest.mark.skipif(os.name != "nt", reason="Windows only")
 
 
-# 1. fallback de encoding
+# 1. encoding fallback
 def test_decode_falls_back_to_system_codepage():
-    text = "Atenção: falhou na função cálculo"
+    text = "Café résumé: naïve façade failed in Ångström"
     assert cli._decode(text.encode("cp1252")) == text
     assert cli._decode(text.encode("utf-8")) == text
 
 
-# 2. git com nomes acentuados
+# 2. git with accented file names
 def test_git_changed_with_accented_filename(tmp_path):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    (tmp_path / "ação.py").write_text("x = 1\n", encoding="utf-8")
-    (tmp_path / "pasta Á").mkdir()
-    (tmp_path / "pasta Á" / "ñ.txt").write_text("y\n", encoding="utf-8")
+    (tmp_path / "façade.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "Ångström dir").mkdir()
+    (tmp_path / "Ångström dir" / "ñ.txt").write_text("y\n", encoding="utf-8")
     files = cli._git_changed(tmp_path)
-    assert "ação.py" in files and any("ñ.txt" in f or f.startswith("pasta Á") for f in files)
+    assert "façade.py" in files and any("ñ.txt" in f or f.startswith("Ångström dir") for f in files)
     assert Session.open(cwd=tmp_path).root == tmp_path.resolve()
 
 
-# 3. linha gigante não esvazia a janela
+# 3. a huge line does not empty the window
 def test_window_keeps_giant_error_line():
     text = "\n".join(["ok"] * 50 + ["E TypeError: boom " + "x" * 30000 + " END"] + ["ok"] * 50)
     out, cut = window_log(text, 6000)
@@ -43,7 +43,7 @@ def test_window_keeps_giant_error_line():
     assert "3 | def target_fn():" in out
 
 
-# 4. execução no Windows
+# 4. execution on Windows
 def test_command_not_found_is_127(model, capsys):
     code, _ = run(capsys, "run", "-i", "x", "--", "definitely-not-a-command-xyz")
     assert code == 127 and not model.calls
@@ -92,7 +92,7 @@ def test_normalize_paths_only_prefix():
     assert cli._normalize_paths(r"src\b.py-7-  x = '\\n'") == r"src/b.py-7-  x = '\\n'"
 
 
-# 6. OLLAMA_HOST no formato do servidor
+# 6. OLLAMA_HOST in the server format
 @pytest.mark.parametrize("raw,expected", [
     ("0.0.0.0", "http://127.0.0.1:11434"),
     ("0.0.0.0:11434", "http://127.0.0.1:11434"),
@@ -114,7 +114,7 @@ def test_find_model_installed_from_hf_quickstart(monkeypatch):
     assert client.find_ordo_model("x") is None
 
 
-# 7. filter / compact com arquivo ausente; filter --mode CODE_SLICE
+# 7. filter / compact with a missing file; filter --mode CODE_SLICE
 def test_missing_input_files_exit_2(model, capsys, tmp_path):
     assert run(capsys, "filter", "-i", "x", str(tmp_path / "nope.log"))[0] == 2
     assert run(capsys, "compact", "-i", "x", "--from", str(tmp_path / "nope.txt"))[0] == 2
@@ -127,5 +127,5 @@ def test_filter_code_slice_numbers_input(model, capsys, tmp_path):
                    "  issue: y\nexact_snippets:\n- location: m.py:3\n  code: '3 | def g():'")
     code, out = run(capsys, "filter", "--force", "--mode", "CODE_SLICE", "-i", "where is g", str(f))
     raw = model.calls[-1]["raw"]
-    assert raw.splitlines()[0].startswith("// file: ") and "3 | def g():" in raw  # \x0c não cria linha
+    assert raw.splitlines()[0].startswith("// file: ") and "3 | def g():" in raw  # \x0c does not create a line
     assert "unverified" not in out

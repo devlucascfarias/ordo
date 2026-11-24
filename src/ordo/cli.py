@@ -1,9 +1,8 @@
 """Ordo CLI: filters tool output, slices source files and keeps session memory for coding agents.
 
-Princípio: o CLI nunca deixa o agente sem resposta útil. Se o modelo falhar (Ollama fora, YAML
-irrecuperável), devolve a saída bruta janelada com um cabeçalho explicando (desligue com
---no-fallback). Avisos do verificador saem como comentários YAML (`# ordo: ...`), então a saída
-continua sendo YAML válido.
+Principle: the CLI never leaves the agent without a useful answer. If the model fails (Ollama down,
+unrecoverable YAML), it prints the windowed raw output with a header explaining why (turn this off with
+--no-fallback). Verifier warnings are YAML comments (`# ordo: ...`), so the output is still valid YAML.
 """
 from __future__ import annotations
 
@@ -28,13 +27,13 @@ from .textproc import clean, est_tokens, window_file, window_log
 from .verify import verify
 
 DEFAULT_BUDGET = int(os.environ.get("ORDO_MAX_INPUT_TOKENS", "6000"))
-BYPASS_LINES, BYPASS_TOKENS = 40, 400  # abaixo disso o modelo gasta mais tokens do que economiza (D25)
-RAW_KEEP = 300  # logs brutos guardados em ~/.ordo/runs (os mais antigos saem)
+BYPASS_LINES, BYPASS_TOKENS = 40, 400  # below this, the model spends more tokens than it saves
+RAW_KEEP = 300  # raw logs kept in ~/.ordo/runs (the oldest are removed)
 
 
 @dataclass
 class Outcome:
-    text: str  # o que vai para o stdout
+    text: str  # what goes to stdout
     status: str | None = None
     summary: str | None = None
     raw_tokens: int = 0
@@ -43,7 +42,7 @@ class Outcome:
     route: str = "model"  # model | bypass | fallback
     windowed: bool = False
     warnings: list[str] = field(default_factory=list)
-    data: dict | None = None  # resultado interpretado (para --json)
+    data: dict | None = None  # parsed result (for --json)
 
     def event(self) -> dict:
         return {"status": self.status, "summary": self.summary, "raw_tokens": self.raw_tokens,
@@ -51,7 +50,7 @@ class Outcome:
                 "warnings": len(self.warnings)}
 
 
-_SINK: ContextVar = ContextVar("ordo_sink", default=None)  # destino da saída quando chamado pelo MCP
+_SINK: ContextVar = ContextVar("ordo_sink", default=None)  # output destination when called by the MCP server
 
 
 def _print(text: str) -> None:
@@ -77,7 +76,7 @@ def run_model(args, mode: GcMode, intent: str, raw: str, *, source_lines: list[s
     raw_tokens = raw_tokens if raw_tokens is not None else est_tokens(raw)
     try:
         res = call_ollama_ordo(mode, intent, raw, model=args.model, host=args.host, timeout=args.timeout)
-    except Exception as e:  # noqa: BLE001 — qualquer falha do servidor vira fallback
+    except Exception as e:  # noqa: BLE001 - any server failure becomes a fallback
         return _fallback(args, f"model call failed ({type(e).__name__}: {e})", raw, raw_tokens)
     parsed = parse_output(res.text, mode)
     if not parsed.yaml_ok:
@@ -121,7 +120,7 @@ def _header(label: str, out: Outcome, extra: str = "") -> str:
 
 
 def save_raw(text: str) -> str:
-    """Guarda a saída completa (já sem ANSI) para o agente recuperar trechos com `ordo show`."""
+    """Save the full output (ANSI already stripped) so the agent can recover parts with `ordo show`."""
     from .session import ordo_home
 
     folder = ordo_home() / "runs"
@@ -135,7 +134,7 @@ def save_raw(text: str) -> str:
 
 def emit(args, label: str, out: Outcome, extra: str = "", *, code: int | None = None, raw_id: str | None = None,
          **fields) -> None:
-    """Saída única de todos os comandos: YAML com cabeçalho (padrão) ou envelope JSON (--json)."""
+    """Single output path for every command: YAML with a header (default) or a JSON envelope (--json)."""
     if getattr(args, "json", False):
         env = {"command": label, "route": out.route, "status": out.status, "exit": code, "raw_id": raw_id,
                "tokens": {"input": out.raw_tokens, "output": out.out_tokens}, "seconds": round(out.seconds, 2),
@@ -169,16 +168,16 @@ _CMD_META = set('&|<>^()%!"') | {" ", "\t"}
 
 
 def _cmd_quote(arg: str) -> str:
-    """Aspas para o cmd.exe: dentro de aspas, & | < > ^ ( ) são literais (só % ainda expande)."""
+    """Quoting for cmd.exe: inside quotes, & | < > ^ ( ) are literal (only % still expands)."""
     if arg and not (set(arg) & _CMD_META):
         return arg
     return '"' + arg.replace('"', '""') + '"'
 
 
 def _resolve_command(cmd: list[str]) -> tuple[list[str] | str, bool]:
-    """Resolve o executável. No Windows, só .cmd/.bat (npm, npx, yarn, mvn...) passam pelo cmd.exe.
+    """Resolve the executable. On Windows, only .cmd/.bat (npm, npx, yarn, mvn...) go through cmd.exe.
 
-    Comando inexistente não vai para o shell: vira FileNotFoundError e exit 127, como no POSIX.
+    A missing command does not go to the shell: it raises FileNotFoundError and exits 127, as on POSIX.
     """
     exe = shutil.which(cmd[0])
     if exe is None:
@@ -189,7 +188,7 @@ def _resolve_command(cmd: list[str]) -> tuple[list[str] | str, bool]:
 
 
 def _decode(data: bytes) -> str:
-    """UTF-8; se não for, a página de código do sistema (cp1252/cp850 no Windows), sem nunca falhar."""
+    """UTF-8; otherwise the system code page (cp1252/cp850 on Windows), never failing."""
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
@@ -205,7 +204,7 @@ def _decode(data: bytes) -> str:
 
 
 def _kill_tree(proc: subprocess.Popen) -> None:
-    if os.name == "nt":  # matar só o cmd.exe deixaria node/java órfãos
+    if os.name == "nt":  # killing only cmd.exe would leave node/java orphaned
         subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
     else:
         try:
@@ -229,7 +228,7 @@ def _execute(target, shell: bool, timeout: float | None, cwd: str | None = None)
 
 def _read_input(path: str | None, label: str) -> bytes | None:
     if not path or path == "-":
-        if sys.stdin is None or sys.stdin.isatty():  # sem pipe: esperaria o teclado para sempre
+        if sys.stdin is None or sys.stdin.isatty():  # no pipe: it would wait for the keyboard forever
             print(f"ordo {label}: nothing on stdin; pipe the output in (cmd 2>&1 | ordo {label} -i ...) "
                   f"or pass a file", file=sys.stderr)
             return None
@@ -260,7 +259,7 @@ def cmd_run(args) -> int:
     text = clean(output)
     intent = args.intent or f"Report the outcome of `{' '.join(cmd)}`"
     out = _filter_or_bypass(args, GcMode.TOOL_OUTPUT, intent, text)
-    if out.status is None:  # saída curta ou fallback: o status vem do código de saída
+    if out.status is None:  # short output or fallback: status comes from the exit code
         out.status = "PASS" if code == 0 else "FAIL"
     rid = save_raw(text)
     emit(args, "run", out, f"exit={code}", code=code, raw_id=rid)
@@ -276,7 +275,7 @@ def cmd_filter(args) -> int:
     text = _decode(data)
     mode = GcMode(args.mode)
     intent = args.intent or "Summarize the outcome and any failure cause"
-    if mode is GcMode.CODE_SLICE:  # entrada tratada como arquivo-fonte: numera e verifica contra ela
+    if mode is GcMode.CODE_SLICE:  # input treated as a source file: number it and verify against it
         name = args.file if args.file not in (None, "-") else "stdin"
         args.intent = intent
         out = _slice_text(args, text.replace("\r\n", "\n"), name.replace("\\", "/"))
@@ -289,7 +288,7 @@ def cmd_filter(args) -> int:
 
 
 def source_lines(src: str) -> list[str]:
-    """Linhas como um editor conta: só \\n separa; o \\n final não cria linha extra."""
+    """Count lines like an editor: only \\n separates; a trailing \\n does not add a line."""
     lines = src.split("\n")
     return lines[:-1] if lines and lines[-1] == "" else lines
 
@@ -318,7 +317,7 @@ def cmd_slice(args) -> int:
 
 
 def _display_path(path: Path, root: Path, given: str) -> str:
-    """Caminho curto como aparece em logs: relativo ao repo da sessão, ao repo do próprio arquivo ou como digitado."""
+    """Short path as it appears in logs: relative to the session repo, to the file's own repo, or as typed."""
     from .session import repo_root
 
     for base in (root, repo_root(path.resolve().parent)):
@@ -333,7 +332,7 @@ _SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "b
 
 
 def _py_search(rx: re.Pattern, paths: list[str], context: int, limit: int = 400) -> str:
-    """Busca sem rg, no mesmo formato (`path:N:match`, `path-N-contexto`, `--` entre blocos)."""
+    """Search without rg, in the same format (`path:N:match`, `path-N-context`, `--` between blocks)."""
     out: list[str] = []
     hits = 0
     for base in paths:
@@ -376,7 +375,7 @@ _RG_LINE = re.compile(r"^((?:[A-Za-z]:)?[^:\n]*?)([:-]\d+[:-])")
 
 
 def _normalize_paths(text: str) -> str:
-    """Troca \\ por / só no caminho do início de cada linha (o código casado fica intacto)."""
+    """Replace \\ with / only in the path at the start of each line (the matched code is left intact)."""
     out = []
     for line in text.split("\n"):
         m = _RG_LINE.match(line)
@@ -470,10 +469,10 @@ def _git_changed(root: Path) -> list[str]:
 
 
 def deterministic_ledger(session: Session, goal: str) -> "MemoryCompact":
-    """Ledger montado só com o que a sessão registrou: nada é inferido por modelo.
+    """Ledger built only from what the session recorded: nothing is inferred by a model.
 
-    O MEMORY_COMPACT do ordo-3b publicado não segue o schema e inventa fatos; por isso este é o
-    caminho padrão do `ordo compact`.
+    The MEMORY_COMPACT output of the published ordo-3b does not follow the schema and invents facts,
+    so this is the default path of `ordo compact`.
     """
     from .schema import DeadEnd, FileState, MemoryCompact
 
@@ -596,7 +595,7 @@ def cmd_stats(args) -> int:
 
 
 def cmd_show(args) -> int:
-    """Recupera a saída completa de um run/filter/search (o filtro comprime, mas o original não se perde)."""
+    """Recover the full output of a run/filter/search (the filter compresses, but the original is kept)."""
     from .session import ordo_home
 
     folder = ordo_home() / "runs"
@@ -675,7 +674,7 @@ def cmd_mcp(args) -> int:
 
 
 def cmd_guide(args) -> int:
-    """Instruções para colar no AGENTS.md do projeto."""
+    """Instructions to paste into the project's AGENTS.md."""
     _print(GUIDE)
     return 0
 
@@ -832,9 +831,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def invoke(argv: list[str]) -> tuple[int, str, str]:
-    """Roda um comando do CLI capturando a saída (para o servidor MCP): (código, stdout, stderr).
+    """Run a CLI command and capture its output (for the MCP server): (code, stdout, stderr).
 
-    A saída vai para um destino por contexto, nunca para o stdout real (o canal do protocolo MCP).
+    Output goes to a per-context destination, never to the real stdout (the MCP protocol channel).
     """
     import contextlib
     import io
@@ -845,7 +844,7 @@ def invoke(argv: list[str]) -> tuple[int, str, str]:
         with contextlib.redirect_stderr(err):
             try:
                 code = _run(argv)
-            except SystemExit as e:  # argparse e --no-fallback
+            except SystemExit as e:  # argparse and --no-fallback
                 code = e.code if isinstance(e.code, int) else (0 if e.code is None else 2)
     finally:
         _SINK.reset(token)
@@ -853,7 +852,7 @@ def invoke(argv: list[str]) -> tuple[int, str, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
-    for stream in (sys.stdout, sys.stderr):  # Windows: não morrer em caracteres fora do cp1252
+    for stream in (sys.stdout, sys.stderr):  # Windows: do not crash on characters outside cp1252
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
@@ -864,7 +863,7 @@ def main(argv: list[str] | None = None) -> int:
 def _run(argv: list[str] | None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if not getattr(args, "func", None):  # `ordo` sozinho: mostra a ajuda, sem erro
+    if not getattr(args, "func", None):  # bare `ordo`: show the help, without an error
         _print(TOP_HELP)
         return 0
     args.session_obj = Session.open(args.session)

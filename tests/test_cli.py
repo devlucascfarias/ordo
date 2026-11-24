@@ -83,7 +83,7 @@ def test_window_file_keeps_real_line_numbers():
     assert cut and "1234 | def repair_yaml_output(raw_text):" in text
 
 
-# ---------------------------------------------------------------- comandos
+# ---------------------------------------------------------------- commands
 
 
 def test_bare_ordo_prints_tree_help(capsys):
@@ -201,7 +201,7 @@ def test_search_python_fallback(model, capsys, tmp_path, monkeypatch):
     (tmp_path / "a.py").write_text("def call_ollama_ordo():\n    pass\n", encoding="utf-8")
     monkeypatch.setattr(cli.shutil, "which", lambda name: None if name == "rg" else None)
     code, out = run(capsys, "search", "call_ollama_ordo", str(tmp_path))
-    assert code == 0 and "a.py:1:def call_ollama_ordo():" in out  # curto: bypass
+    assert code == 0 and "a.py:1:def call_ollama_ordo():" in out  # short: bypass
 
 
 def _session_steps(capsys):
@@ -214,13 +214,13 @@ def test_compact_deterministic_by_default(model, capsys):
     _session_steps(capsys)
     n_calls = len(model.calls)
     code, out = run(capsys, "compact", "-i", "Stabilize webhook idempotency")
-    assert len(model.calls) == n_calls  # sem modelo
+    assert len(model.calls) == n_calls  # no model call
     res = __import__("ordo.schema", fromlist=["parse_output"]).parse_output(out.split("\n", 1)[1], "MEMORY_COMPACT")
     assert res.schema_ok and res.obj.active_goal == "Stabilize webhook idempotency"
     assert res.obj.dead_ends_do_not_repeat[0].attempt == "Global asyncio.Lock in webhook"
     assert "pool exhausted when batch > 50 (src/ledger/pool.py:42)" in res.obj.confirmed_facts
     assert any(f.startswith("Last `") and "pytest --version`: exit 0" in f for f in res.obj.confirmed_facts)
-    # o próximo compact herda o ledger anterior e não duplica
+    # the next compact inherits the previous ledger without duplicating it
     run(capsys, "dead-end", "Retry with backoff", "Still double-charged")
     code, out = run(capsys, "compact", "-i", "again")
     res = __import__("ordo.schema", fromlist=["parse_output"]).parse_output(out.split("\n", 1)[1], "MEMORY_COMPACT")
@@ -235,7 +235,7 @@ def test_compact_neural_valid_and_invalid(model, capsys):
     traj = model.calls[-1]["raw"]
     assert "[dead-end] attempt: Global asyncio.Lock in webhook" in traj and "[note] pool exhausted" in traj
     assert "[turn 1] $ " in traj and "active_goal: Stabilize webhook" in out
-    # saída fora do schema (o que o modelo publicado faz) -> ledger determinístico
+    # output outside the schema (what the published model does) -> deterministic ledger
     model.reply = "status: COMPACTED\nactive_goal: x\nconfirmed_facts:\n- file: a.py\n  lines: '5'\n"
     code, out = run(capsys, "compact", "--neural", "-i", "goal B")
     assert "model output failed the schema; deterministic ledger instead" in out and "active_goal: goal B" in out

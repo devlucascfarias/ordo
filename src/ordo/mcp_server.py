@@ -1,11 +1,11 @@
-"""Servidor MCP (stdio) do Ordo: as mesmas ferramentas do CLI como ferramentas nativas de agentes.
+"""Ordo MCP server (stdio): the same tools as the CLI, exposed as native agent tools.
 
-    ordo mcp              # todas as ferramentas
-    ordo mcp --no-run     # sem execução de comandos
+    ordo mcp              # all tools
+    ordo mcp --no-run     # no command execution
 
-Cada ferramenta chama o comando equivalente do CLI com --json via `cli.invoke` (mesma lógica, sem
-segunda implementação) e devolve o envelope estruturado. Chamadas são serializadas: o modelo local
-atende uma de cada vez e a captura de stderr é global.
+Each tool calls the matching CLI command with --json through `cli.invoke` (same logic, no second
+implementation) and returns the structured envelope. Calls are serialized: the local model serves
+one request at a time and stderr capture is global.
 """
 from __future__ import annotations
 
@@ -55,12 +55,12 @@ async def _acall(argv: list[str]) -> dict[str, Any]:
 
 
 def _command_argv(command: str) -> list[str]:
-    """String do agente -> argv. Com pipes/redirecionamentos, roda pelo shell do sistema."""
+    """Agent command string -> argv. With pipes or redirections, run it through the system shell."""
     if any(m in command for m in _SHELL_META):
         return ["cmd", "/d", "/s", "/c", command] if os.name == "nt" else ["sh", "-c", command]
     if os.name != "nt":
         return shlex.split(command)
-    # no Windows o shlex não-POSIX mantém as aspas: "C:\Program Files\x.exe" precisa sair sem elas
+    # on Windows, non-POSIX shlex keeps the quotes: "C:\Program Files\x.exe" must come out without them
     return [t[1:-1] if len(t) > 1 and t[0] == t[-1] and t[0] in "\"'" else t for t in shlex.split(command, posix=False)]
 
 

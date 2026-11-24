@@ -1,7 +1,7 @@
-"""Preparação da entrada antes do modelo: limpeza, estimativa de tokens e janelamento.
+"""Input preparation before the model: cleanup, token estimate and windowing.
 
-O modelo foi treinado com entradas curtas; aqui garantimos que nada passa do orçamento em silêncio
-(o Ollama cortaria o começo do prompt) e que o que é cortado fica marcado no texto.
+The model was trained on short inputs; this makes sure nothing silently exceeds the budget
+(Ollama would cut the start of the prompt) and that whatever is cut is marked in the text.
 """
 from __future__ import annotations
 
@@ -18,14 +18,14 @@ ERROR_HINT = re.compile(
 
 
 def clean(text: str) -> str:
-    """Remove ANSI, normaliza quebras de linha e redesenhos com \\r (barras de progresso)."""
+    """Strip ANSI codes, normalize line breaks and \\r redraws (progress bars)."""
     text = ANSI.sub("", text).replace("\r\n", "\n")
     lines = [l.rsplit("\r", 1)[-1] for l in text.split("\n")]
     return "\n".join(lines).strip("\n")
 
 
 def est_tokens(text: str) -> int:
-    """Estimativa barata (código/log ≈ 3,5 caracteres por token no tokenizer do Qwen)."""
+    """Cheap estimate (code and logs are about 3.5 characters per token with the Qwen tokenizer)."""
     return int(len(text) / 3.5) + 1
 
 
@@ -53,14 +53,14 @@ def _render(lines: list[str], spans: list[tuple[int, int]], numbered: bool) -> s
 
 
 def _fit(lines: list[str], spans: list[tuple[int, int]], budget: int) -> list[tuple[int, int]]:
-    """Mantém spans na ordem de prioridade até estourar o orçamento de tokens."""
+    """Keep spans in priority order until the token budget runs out."""
     covered: set[int] = set()
     used = 0
     for a, b in spans:
         new = [i for i in range(a, b + 1) if i not in covered]
         cost = sum(est_tokens(lines[i]) for i in new)
         if used + cost > budget:
-            for i in new:  # corta o span pelo fim
+            for i in new:  # cut the span from its end
                 c = est_tokens(lines[i])
                 if used + c > budget:
                     break
@@ -73,7 +73,7 @@ def _fit(lines: list[str], spans: list[tuple[int, int]], budget: int) -> list[tu
 
 
 def shorten_line(line: str, max_chars: int) -> str:
-    """Linha gigante (bundle minificado, dump JSON, snapshot) vira começo + marcador + fim."""
+    """A huge line (minified bundle, JSON dump, snapshot) becomes start + marker + end."""
     if len(line) <= max_chars:
         return line
     keep = max_chars // 2
@@ -81,15 +81,15 @@ def shorten_line(line: str, max_chars: int) -> str:
 
 
 def window_log(text: str, budget: int, *, head: int = 30, tail: int = 60, ctx: int = 12) -> tuple[str, bool]:
-    """Reduz um log ao orçamento preservando fim, começo e blocos ao redor de linhas de erro."""
+    """Reduce a log to the budget, keeping the end, the start and blocks around error lines."""
     if est_tokens(text) <= budget:
         return text, False
-    max_chars = max(int(budget * 3.5 / 8), 200)  # nenhuma linha come mais de 1/8 do orçamento
+    max_chars = max(int(budget * 3.5 / 8), 200)  # no single line takes more than 1/8 of the budget
     lines = [shorten_line(l, max_chars) for l in text.split("\n")]
     n = len(lines)
     errs = [i for i, l in enumerate(lines) if ERROR_HINT.search(l)]
     around = lambda i: (max(i - ctx, 0), min(i + ctx, n - 1))  # noqa: E731
-    # prioridade: primeiro erro, último erro, fim curto (resumo), começo curto, demais erros do fim pro começo
+    # priority: first error, last error, short tail (summary), short head, remaining errors from last to first
     spans = [around(i) for i in (errs[:1] + errs[-1:])]
     spans += [(max(n - min(tail, 20), 0), n - 1), (0, min(head // 3, n) - 1)]
     spans += [around(i) for i in errs[1:3] + errs[::-1]]
@@ -103,11 +103,11 @@ defined definition implementation where's does how why fix bug error test tests 
 
 
 def intent_terms(intent: str) -> tuple[list[str], list[str]]:
-    """Termos fortes (identificadores de código ou entre aspas/crases) e fracos (palavras comuns)."""
+    """Strong terms (code identifiers, quoted or backticked text) and weak terms (common words)."""
     quoted = re.findall(r"[`'\"]([^`'\"]{2,60})[`'\"]", intent)
     idents = re.findall(r"[A-Za-z_][A-Za-z0-9_]*(?:[.:#]{1,2}[A-Za-z_][A-Za-z0-9_]*)*", intent)
     strong = quoted + [w for w in idents if "_" in w or re.search(r"[a-z][A-Z]", w) or re.search(r"[.:#]", w)]
-    # `Context.lookup_default` não aparece assim no código (lá é `def lookup_default`): busca as partes também
+    # `Context.lookup_default` does not appear like that in code (it is `def lookup_default`): search the parts too
     for w in list(strong):
         parts = [p for p in re.split(r"[.:#]+", w) if len(p) > 2]
         if len(parts) > 1:
@@ -118,11 +118,11 @@ def intent_terms(intent: str) -> tuple[list[str], list[str]]:
 
 
 def window_file(text: str, intent: str, budget: int, *, ctx: int = 40) -> tuple[str, bool]:
-    """Arquivo numerado (1-based); se não couber, só as regiões que casam com a intenção."""
+    """Numbered file (1-based); if it does not fit, only the regions that match the intent."""
     full = number_lines(text)
     if est_tokens(full) <= budget:
         return full, False
-    max_chars = max(int(budget * 3.5 / 8), 200)  # linhas minificadas não podem esvaziar a janela
+    max_chars = max(int(budget * 3.5 / 8), 200)  # minified lines must not use up the window
     lines = [shorten_line(l, max_chars) for l in text.split("\n")]
     strong, weak = intent_terms(intent)
     n = len(lines)
@@ -130,7 +130,7 @@ def window_file(text: str, intent: str, budget: int, *, ctx: int = 40) -> tuple[
     for i, l in enumerate(lines):
         s = sum(3 for t in strong if t in l) + sum(1 for t in weak if t.lower() in l.lower())
         if s and re.match(r"\s*(def|class|func|fn|function|public|private|protected|export|async|static|module|impl|struct|interface|type)\b", l):
-            s += 2  # definições primeiro
+            s += 2  # definitions first
         if s:
             scores.append((s, i))
     scores.sort(key=lambda x: (-x[0], x[1]))

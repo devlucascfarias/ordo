@@ -1,8 +1,8 @@
-"""Memória da sessão e telemetria, fora do repositório do usuário.
+"""Session memory and telemetry, kept outside the user's repository.
 
-Cada repositório (raiz do git, ou a pasta atual) tem um arquivo JSONL em
-`~/.ordo/sessions/<hash>.jsonl`; `--session NOME` ou `ORDO_SESSION` usam `<NOME>.jsonl`
-(útil para agentes em paralelo no mesmo repo). `ORDO_HOME` muda a pasta base.
+Each repository (git root, or the current folder) gets a JSONL file in
+`~/.ordo/sessions/<hash>.jsonl`; `--session NAME` or `ORDO_SESSION` use `<NAME>.jsonl`
+(useful for parallel agents in the same repo). `ORDO_HOME` changes the base folder.
 """
 from __future__ import annotations
 

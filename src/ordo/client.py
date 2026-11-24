@@ -1,4 +1,4 @@
-"""Cliente do Ollama para o Ordo 3B."""
+"""Ollama client for Ordo 3B."""
 from __future__ import annotations
 
 import os
@@ -11,7 +11,7 @@ from .contract import GcMode, build_messages
 
 DEFAULT_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("ORDO_MODEL", "ordo:3b")
-# nomes com que o modelo publicado costuma estar instalado (Modelfile local ou Quickstart do Hugging Face)
+# names the published model is usually installed under (local Modelfile or the Hugging Face quickstart)
 KNOWN_NAMES = ("ordo:3b", "hf.co/devlucascfarias/ordo-3b")
 
 
@@ -21,17 +21,17 @@ class OrdoResult:
     prompt_tokens: int
     output_tokens: int
     seconds: float
-    truncated: bool = False  # parou no limite de num_predict
+    truncated: bool = False  # stopped at the num_predict limit
     model: str = ""
 
 
 def normalize_host(host: str) -> str:
-    """Aceita o formato do OLLAMA_HOST do servidor: `0.0.0.0`, `0.0.0.0:11434`, `:11434`, `host`, URL."""
+    """Accept the server-style OLLAMA_HOST format: `0.0.0.0`, `0.0.0.0:11434`, `:11434`, `host`, URL."""
     h = (host or "").strip().rstrip("/")
     scheme = "http"
     if "://" in h:
         scheme, h = h.split("://", 1)
-    if h.startswith("["):  # IPv6 entre colchetes, com ou sem porta
+    if h.startswith("["):  # bracketed IPv6, with or without a port
         name, _, port = h.partition("]")
         name, port = name + "]", port.lstrip(":")
     elif h.count(":") == 1:
@@ -52,12 +52,12 @@ def installed_models(host: str, timeout: float = 5.0) -> list[str]:
 
 
 def find_ordo_model(host: str) -> str | None:
-    """Procura o Ordo entre os modelos instalados, para quem instalou com outro nome."""
+    """Look for Ordo among the installed models, in case it was installed under another name."""
     try:
         names = installed_models(host)
     except (httpx.HTTPError, ValueError):
         return None
-    for known in KNOWN_NAMES:  # "hf.co/devlucascfarias/ordo-3b" casa com ".../ordo-3b:latest"
+    for known in KNOWN_NAMES:  # "hf.co/devlucascfarias/ordo-3b" matches ".../ordo-3b:latest"
         for n in names:
             if n == known or (":" not in known and n.rsplit(":", 1)[0] == known):
                 return n
@@ -75,7 +75,7 @@ def call_ollama_ordo(
     model: str = DEFAULT_MODEL,
     host: str = DEFAULT_HOST,
     num_ctx: int = 16384,
-    num_predict: int = 1024,  # o Modelfile usa 512, que corta snippets longos de CODE_SLICE no meio
+    num_predict: int = 1024,  # the Modelfile uses 512, which cuts long CODE_SLICE snippets in half
     timeout: float = 300.0,
 ) -> OrdoResult:
     base = normalize_host(host)
@@ -84,11 +84,11 @@ def call_ollama_ordo(
         "model": name,
         "messages": build_messages(mode, intent, raw_input),
         "stream": False,
-        "keep_alive": os.environ.get("ORDO_KEEP_ALIVE", "30m"),  # evita recarregar o modelo a cada chamada
+        "keep_alive": os.environ.get("ORDO_KEEP_ALIVE", "30m"),  # avoid reloading the model on every call
         "options": {"temperature": 0.0, "top_p": 0.9, "num_ctx": num_ctx, "num_predict": num_predict},
     }
     r = httpx.post(f"{base}/api/chat", json=payload, timeout=timeout)
-    if r.status_code == 404 and name == model:  # modelo não instalado com esse nome
+    if r.status_code == 404 and name == model:  # model not installed under this name
         alt = find_ordo_model(base)
         if alt and alt != model:
             print(f"ordo: model {model!r} not found; using {alt!r} (set ORDO_MODEL={alt} to silence)", file=sys.stderr)

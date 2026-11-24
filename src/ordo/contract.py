@@ -1,7 +1,7 @@
-"""Contrato do Ordo 3B: system prompt, formato da mensagem e modos.
+"""Ordo 3B contract: system prompt, message format and modes.
 
-Tem que bater exatamente com o que o modelo publicado aprendeu (Modelfile do repo
-devlucascfarias/ordo-3b no Hugging Face). Mudar algo aqui exige retreinar.
+Must match exactly what the published model was trained on (the Modelfile of
+devlucascfarias/ordo-3b on Hugging Face). Changing anything here requires retraining.
 """
 from __future__ import annotations
 
@@ -39,8 +39,8 @@ def build_messages(mode: GcMode | str, intent: str, raw_input: str) -> list[dict
 
 
 def number_lines(text: str, start: int = 1) -> str:
-    """Prefixa linhas no formato usado em exact_snippets (`NN | código`), 1-based."""
-    lines = text.split("\n")  # como um editor conta (splitlines também quebra em \x0c, \x1c...)
+    """Prefix lines in the format used by exact_snippets (`NN | code`), 1-based."""
+    lines = text.split("\n")  # count lines like an editor does (splitlines also breaks on \x0c, \x1c...)
     if lines and lines[-1] == "":
         lines.pop()
     width = len(str(start + len(lines) - 1)) if lines else 1

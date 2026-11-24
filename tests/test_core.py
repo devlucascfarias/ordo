@@ -97,7 +97,7 @@ def test_parse_line_spec():
     assert parse_line_spec("62:5") == [62]
 
 
-# ---------------------------------------------------------------- verificador
+# ---------------------------------------------------------------- verifier
 
 
 def test_verify_smoke_catches_invented_snippet_line():
@@ -106,8 +106,8 @@ def test_verify_smoke_catches_invented_snippet_line():
     rep = verify(res.obj, SMOKE_LOG, "TOOL_OUTPUT")
     assert rep.rate("file") == 1.0 and rep.rate("line") == 1.0
     bad = {c.target for c in rep.failures if c.kind == "snippet"}
-    # o snippet multilinha veio entre aspas simples: o YAML dobra as quebras de linha em espaços e o
-    # código deixa de existir no log (além do '>' inventado antes de `batch = ...`)
+    # the multi-line snippet came in single quotes: YAML folds the line breaks into spaces and the
+    # code no longer exists in the log (besides the '>' invented before `batch = ...`)
     assert bad == {"tests/test_settlement.py:88"}
 
 

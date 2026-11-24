@@ -1,4 +1,4 @@
-"""Servidor MCP: ferramentas chamadas direto e um cliente MCP real falando com `ordo mcp` por stdio."""
+"""MCP server: tools called directly, and a real MCP client talking to `ordo mcp` over stdio."""
 import json
 import shutil
 import sys
@@ -61,7 +61,7 @@ def test_invoke_never_writes_to_real_stdout(capsys, model):
     assert code == 0 and out.startswith("## Ordo") and capsys.readouterr().out == ""
 
 
-@pytest.mark.skipif(not shutil.which("ordo"), reason="ordo não instalado no PATH")
+@pytest.mark.skipif(not shutil.which("ordo"), reason="ordo is not installed on PATH")
 def test_real_mcp_client_over_stdio(tmp_path):
     from mcp.client.session import ClientSession
     from mcp.client.stdio import StdioServerParameters, stdio_client

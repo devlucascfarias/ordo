@@ -1,7 +1,4 @@
-"""Esquemas de saída do Ordo, parsing, reparo de YAML e serialização segura dos alvos de treino.
-
-Usado pelo CLI (validar a resposta), pelo benchmark (pontuar) e pela geração de dados (filtrar).
-"""
+"""Ordo output schemas, parsing, YAML repair and safe YAML serialization."""
 from __future__ import annotations
 
 import json
@@ -14,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from .contract import GcMode
 
-# ---------------------------------------------------------------- modelos
+# ---------------------------------------------------------------- models
 
 
 class _Strict(BaseModel):
@@ -40,14 +37,14 @@ class Snippet(_Strict):
     @field_validator("code", mode="before")
     @classmethod
     def _unescape_newlines(cls, v: Any) -> Any:
-        # o modelo publicado às vezes escreve '116 | a\n117 | b' entre aspas simples (\n literal)
+        # the published model sometimes writes '116 | a\n117 | b' in single quotes (a literal \n)
         if isinstance(v, str) and "\n" not in v and "\\n" in v:
             return v.replace("\\n", "\n").replace('\\"', '"')
         return v
 
 
 class ToolOutput(_Strict):
-    # FOUND/NOT_FOUND: o modelo publicado usa em saídas de busca (`ordo search`), que passam por TOOL_OUTPUT
+    # FOUND/NOT_FOUND: the published model uses them for search output (`ordo search`), which goes through TOOL_OUTPUT
     status: Literal["PASS", "FAIL", "ERROR", "WARN", "FOUND", "NOT_FOUND"]
     summary: str
     causal_trace: list[TraceItem] = []
@@ -87,7 +84,7 @@ SCHEMAS: dict[GcMode, type[_Strict]] = {
     GcMode.MEMORY_COMPACT: MemoryCompact,
 }
 
-# ---------------------------------------------------------------- reparo
+# ---------------------------------------------------------------- repair
 
 _FENCE = re.compile(r"^\s*```[\w-]*\s*$")
 _STRUCT = re.compile(r"^(?P<indent>\s*)(?P<dash>- )?(?P<key>[A-Za-z_][\w]*):(?:\s+(?P<value>.*))?$")
@@ -100,14 +97,14 @@ def strip_fences(text: str) -> str:
 
 
 def _decode_single(inner: str) -> str:
-    """Conteúdo entre aspas simples. Se há aspas simples soltas (o modelo não escapou), usa literal."""
+    """Single-quoted content. If it has stray single quotes (the model did not escape them), keep it literal."""
     if "'" in inner.replace("''", ""):
         return inner
     return inner.replace("''", "'")
 
 
 def _requote(value: str) -> str:
-    """Reescreve um valor escalar como string YAML entre aspas duplas (JSON é YAML válido)."""
+    """Rewrite a scalar value as a double-quoted YAML string (JSON is valid YAML)."""
     v = value.strip()
     if len(v) >= 2 and v[0] == v[-1] == "'":
         return json.dumps(_decode_single(v[1:-1]), ensure_ascii=False)
@@ -116,18 +113,18 @@ def _requote(value: str) -> str:
             return json.dumps(json.loads(v), ensure_ascii=False)
         except json.JSONDecodeError:
             return json.dumps(v[1:-1], ensure_ascii=False)
-    if v.startswith("'") or v.startswith('"'):  # aberta e nunca fechada
+    if v.startswith("'") or v.startswith('"'):  # opened and never closed
         return json.dumps(v[1:], ensure_ascii=False)
     return json.dumps(v, ensure_ascii=False)
 
 
 def repair_yaml_output(raw_text: str) -> str:
-    """Conserta os defeitos típicos do modelo publicado, linha a linha.
+    """Fix the typical defects of the published model, line by line.
 
-    - remove cercas de markdown;
-    - reescreve escalares com aspas simples internas não escapadas (PHP, Ruby, SQL);
-    - junta linhas de continuação soltas ao valor anterior.
-    Só reescreve valores; a estrutura (chaves, listas, indentação) fica como veio.
+    - remove markdown fences;
+    - rewrite scalars with unescaped inner single quotes (PHP, Ruby, SQL);
+    - join stray continuation lines to the previous value.
+    Only values are rewritten; the structure (keys, lists, indentation) is kept as is.
     """
     text = strip_fences(raw_text)
     groups: list[tuple[re.Match | None, str, list[str]]] = []
@@ -165,11 +162,11 @@ def repair_yaml_output(raw_text: str) -> str:
 @dataclass
 class ParseResult:
     mode: GcMode
-    raw_yaml_ok: bool  # o texto do modelo já era YAML (mapa) sem cercas
-    repaired: bool  # precisou do repair para virar YAML
+    raw_yaml_ok: bool  # the model text was already YAML (a mapping) without fences
+    repaired: bool  # needed the repair step to become YAML
     data: Optional[dict] = None
     obj: Optional[_Strict] = None
-    lenient: Optional[_Strict] = None  # válido só depois de descartar chaves extras de nível superior
+    lenient: Optional[_Strict] = None  # valid only after dropping extra top-level keys
     errors: list[str] = field(default_factory=list)
 
     @property
@@ -198,7 +195,7 @@ def parse_output(text: str, mode: GcMode | str) -> ParseResult:
         data = _load_map(repair_yaml_output(text))
         res.repaired = data is not None
     if data is None:
-        res.errors.append("yaml: não foi possível interpretar nem após o reparo")
+        res.errors.append("yaml: could not be parsed, even after repair")
         return res
     res.data = data
     try:
@@ -206,11 +203,11 @@ def parse_output(text: str, mode: GcMode | str) -> ParseResult:
     except ValidationError as e:
         for err in e.errors():
             res.errors.append(f"schema: {'.'.join(str(p) for p in err['loc'])}: {err['msg']}")
-        # para verificar o conteúdo mesmo assim: ignora só chaves extras no nível de cima
+        # to check the content anyway: ignore only extra top-level keys
         schema = SCHEMAS[mode]
         alt = dict(data)
         if mode is GcMode.CODE_SLICE and "relevant_symbols" not in alt and "causal_trace" in alt:
-            alt["relevant_symbols"] = alt.pop("causal_trace")  # o modelo publicado usa a chave do TOOL_OUTPUT
+            alt["relevant_symbols"] = alt.pop("causal_trace")  # the published model uses the TOOL_OUTPUT key
         try:
             res.lenient = schema.model_validate({k: v for k, v in alt.items() if k in schema.model_fields})
         except ValidationError:
@@ -218,7 +215,7 @@ def parse_output(text: str, mode: GcMode | str) -> ParseResult:
     return res
 
 
-# ---------------------------------------------------------------- alvos de treino
+# ---------------------------------------------------------------- safe serialization
 
 
 class _TargetDumper(yaml.SafeDumper):
@@ -234,10 +231,10 @@ _TargetDumper.add_representer(str, _str_repr)
 
 
 def dump_target(obj: _Strict | dict) -> str:
-    """Serializa um alvo de treino como YAML seguro (D6): nunca escrito à mão, sempre reparseável."""
+    """Serialize an output as safe YAML: never hand-written, always parseable back."""
     data = obj.model_dump(exclude_none=True) if isinstance(obj, BaseModel) else obj
-    if isinstance(obj, BaseModel):  # listas vazias não são escritas (saída mais curta; regra 4 no PASS)
+    if isinstance(obj, BaseModel):  # empty lists are omitted (shorter output; rule 4 for PASS)
         data = {k: v for k, v in data.items() if v != []}
     text = yaml.dump(data, Dumper=_TargetDumper, sort_keys=False, allow_unicode=True, width=10**9)
-    assert yaml.safe_load(text) == data, "dump_target não é reversível"
+    assert yaml.safe_load(text) == data, "dump_target is not reversible"
     return text.rstrip("\n")
