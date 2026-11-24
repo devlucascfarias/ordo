@@ -77,8 +77,10 @@ Use `--` before the command when it has its own flags that could clash (`ordo ru
 - **`--json`** on `run`/`filter`/`slice`/`search`/`stats` prints an envelope with the parsed result, exit code,
   warnings, tokens and `raw_id`.
 - **Large input is windowed** to `--budget` tokens (default 6000) around error lines; the cut is marked in the text.
-- **`compact` is deterministic by default**: it is built only from what the session recorded (`dead-end`,
-  `note`, the last result of each command, `git status`). `--neural` asks the model instead, falling back
+- **`compact` is deterministic by default**: it is built only from what the session recorded: `dead-end`,
+  `note`, the last result of each test, build or lint command from the last `ORDO_LEDGER_HOURS`, and the
+  modified files from `git status`. A file is `PASS` or `FAIL` only if the last test run started after its
+  last change; otherwise it is `UNTESTED`. `--neural` asks the model instead, falling back
   to the deterministic ledger if the output fails the schema (the published Ordo 3B is not reliable
   in this mode yet).
 - Session memory lives in `~/.ordo/sessions/`, one file per repository (never inside your repo).
@@ -94,6 +96,7 @@ Use `--` before the command when it has its own flags that could clash (`ordo ru
 | `ORDO_SESSION` | one session per repository |
 | `ORDO_KEEP_ALIVE` | `30m` (how long Ollama keeps the model loaded) |
 | `ORDO_HOME` | `~/.ordo` |
+| `ORDO_LEDGER_HOURS` | `12` (command results older than this are left out of `compact`) |
 | `ORDO_BASE_URL` | unset (Ollama). Set it to use an OpenAI-compatible server instead |
 | `ORDO_API_KEY` | unset (sent as a Bearer token when the server needs one) |
 

@@ -469,11 +469,30 @@ def _git_changed(root: Path) -> list[str]:
     return files
 
 
+_CHECK_CMD = re.compile(_TEST_CMD.pattern + r"|\b(tsc|eslint|ruff|mypy|pyright|flake8|clippy|golangci-lint|go (build|vet)|"
+                        r"cargo (build|check)|npm (run )?(build|lint)|yarn (build|lint)|pnpm (build|lint)|make|cmake|"
+                        r"dotnet build|mvn\w*\s+(compile|package|verify)|gradle\w*\s+build)\b")
+
+
+def _ledger_window_seconds() -> float:
+    """Command results older than this are not turned into facts (session files persist across days)."""
+    try:
+        return float(os.environ.get("ORDO_LEDGER_HOURS", "12")) * 3600
+    except ValueError:
+        return 12 * 3600
+
+
 def deterministic_ledger(session: Session, goal: str) -> "MemoryCompact":
     """Ledger built only from what the session recorded: nothing is inferred by a model.
 
     The MEMORY_COMPACT output of the published ordo-3b does not follow the schema and invents facts,
     so this is the default path of `ordo compact`.
+
+    - Notes and dead ends are kept (and inherited from the previous compact).
+    - Command results become facts only for tests, builds, linters and type checkers run since the last
+      compact and within ORDO_LEDGER_HOURS (default 12); they are recomputed, never inherited.
+    - A modified file is PASS or FAIL only if the last test run started after its last change; otherwise
+      it is UNTESTED.
     """
     from .schema import DeadEnd, FileState, MemoryCompact
 
@@ -483,8 +502,9 @@ def deterministic_ledger(session: Session, goal: str) -> "MemoryCompact":
     if prev and prev.get("ledger"):
         p = parse_output(prev["ledger"], GcMode.MEMORY_COMPACT)
         if p.obj is not None:
-            facts += p.obj.confirmed_facts
+            facts += [f for f in p.obj.confirmed_facts if not f.startswith("Last `")]
             dead += p.obj.dead_ends_do_not_repeat
+    oldest = time.time() - _ledger_window_seconds()
     last_by_cmd: dict[str, dict] = {}
     last_test: dict | None = None
     for ev in session.since_last_compact():
@@ -492,7 +512,7 @@ def deterministic_ledger(session: Session, goal: str) -> "MemoryCompact":
             facts.append(ev["text"])
         elif ev["kind"] == "dead_end":
             dead.append(DeadEnd(attempt=ev["attempt"], reason_failed=ev["reason"]))
-        elif ev["kind"] == "run":
+        elif ev["kind"] == "run" and ev.get("ts", 0) >= oldest and _CHECK_CMD.search(ev["command"]):
             last_by_cmd[ev["command"]] = ev
             if _TEST_CMD.search(ev["command"]):
                 last_test = ev
@@ -500,14 +520,22 @@ def deterministic_ledger(session: Session, goal: str) -> "MemoryCompact":
         result = ev.get("status") or ("PASS" if ev["exit"] == 0 else "FAIL")
         line = f"Last `{cmd}`: exit {ev['exit']} ({result})"
         if ev.get("summary") and ev.get("route") == "model":
-            line += f" — {ev['summary']}"
+            line += f": {ev['summary']}"
         facts.append(line)
     seen: set[str] = set()
     facts = [f for f in facts if not (f in seen or seen.add(f))]
     seen_d: set[str] = set()
     dead = [d for d in dead if not (d.attempt in seen_d or seen_d.add(d.attempt))]
-    test_status = "UNKNOWN" if last_test is None else ("PASS" if last_test["exit"] == 0 else "FAIL")
-    files = [FileState(file=f, test_status=test_status) for f in _git_changed(session.root)]
+    test_started = None if last_test is None else last_test["ts"] - (last_test.get("cmd_seconds") or 0)
+    test_result = None if last_test is None else ("PASS" if last_test["exit"] == 0 else "FAIL")
+    files = []
+    for f in _git_changed(session.root):
+        try:
+            changed = (session.root / f).stat().st_mtime
+        except OSError:  # deleted: no test has seen the deletion unless one ran after it, which we cannot tell
+            changed = float("inf")
+        status = test_result if test_started is not None and changed <= test_started else "UNTESTED"
+        files.append(FileState(file=f, test_status=status))
     return MemoryCompact(status="COMPACTED", active_goal=goal, confirmed_facts=facts,
                          dead_ends_do_not_repeat=dead, modified_files_state=files)
 

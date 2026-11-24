@@ -275,3 +275,52 @@ def test_top_help_is_plain_when_piped_and_colored_at_a_terminal(monkeypatch, cap
         colored = tty.getvalue()
         assert code == 0 and "\x1b[" in colored
         assert re.sub(r"\x1b\[[0-9;]*m", "", colored).rstrip() == cli.TOP_HELP.rstrip()
+
+
+def _ledger_repo(tmp_path):
+    import os
+    import subprocess
+    import time
+
+    from ordo.session import Session
+
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    old, new = repo / "old.py", repo / "new.py"
+    old.write_text("x = 1\n", encoding="utf-8")
+    now = time.time()
+    os.utime(old, (now - 600, now - 600))  # changed 10 min ago
+    sess = Session(path=tmp_path / "s.jsonl", root=repo)  # session file outside the repository
+    return sess, old, new, now
+
+
+def test_ledger_ignores_trivial_and_stale_commands(tmp_path, monkeypatch):
+    sess, *_, now = _ledger_repo(tmp_path)
+    monkeypatch.setenv("ORDO_LEDGER_HOURS", "12")
+    for cmd, ts in [("python -c print(1)", now - 60), ("pytest -q tests/old", now - 13 * 3600),
+                    ("npx tsc --noEmit", now - 30)]:
+        sess.append("run", command=cmd, exit=0)
+        lines = sess.path.read_text(encoding="utf-8").splitlines()
+        lines[-1] = lines[-1].replace('"ts": ', f'"ts": {ts}, "_ts": ', 1)
+        sess.path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    ledger = cli.deterministic_ledger(sess, "goal")
+    runs = [f for f in ledger.confirmed_facts if f.startswith("Last `")]
+    assert runs == ["Last `npx tsc --noEmit`: exit 0 (PASS)"]
+    # recomputed, never inherited: a later compact does not carry old command results
+    sess.append("compact", intent="goal", ledger=cli._normalized(ledger.model_dump()))
+    assert not [f for f in cli.deterministic_ledger(sess, "goal").confirmed_facts if f.startswith("Last `")]
+
+
+def test_ledger_marks_files_changed_after_the_last_test_as_untested(tmp_path):
+    import json
+    import time
+
+    sess, old, new, now = _ledger_repo(tmp_path)
+    sess.path.write_text(json.dumps({"ts": now - 300, "kind": "run", "command": "pytest -q", "exit": 0,
+                                     "cmd_seconds": 5}) + "\n", encoding="utf-8")
+    new.write_text("y = 2\n", encoding="utf-8")  # created after the test run
+    states = {f.file: f.test_status for f in cli.deterministic_ledger(sess, "goal").modified_files_state}
+    assert states == {"old.py": "PASS", "new.py": "UNTESTED"}
+    states = {f.file: f.test_status for f in cli.deterministic_ledger(
+        type(sess)(path=tmp_path / "empty.jsonl", root=sess.root), "goal").modified_files_state}
+    assert set(states.values()) == {"UNTESTED"}  # no test run at all
