@@ -440,3 +440,59 @@ def test_savings_aggregates_all_projects_plain_json_and_terminal(ordo_home, caps
     tty = TTY()
     monkeypatch.setattr(sys, "stdout", tty)
     assert cli.main(["savings"]) == 0 and "\x1b[" in tty.getvalue() and "6,290" in tty.getvalue()
+
+
+def test_outputs_and_named_sessions_are_kept_per_project(tmp_path, monkeypatch, capsys):
+    import subprocess
+
+    from ordo.session import Session
+
+    monkeypatch.delenv("ORDO_SESSION", raising=False)
+    a, b = tmp_path / "proj-a", tmp_path / "proj-b"
+    for d in (a, b):
+        subprocess.run(["git", "init", "-q", str(d)], check=True)
+    sa, sb = Session.open(cwd=a), Session.open(cwd=b)
+    ra, rb = cli.save_raw("output of A", sa), cli.save_raw("output of B", sb)
+    assert sa.runs_dir() != sb.runs_dir()
+    assert cli.find_raw(sa, "last")[0].read_text(encoding="utf-8") == "output of A"  # never B's, even if newer
+    assert cli.find_raw(sa, rb)[0].read_text(encoding="utf-8") == "output of B"  # ids resolve from anywhere
+    assert Session.open("main", cwd=a).path != Session.open("main", cwd=b).path  # --session main does not mix
+    assert Session.open("main", cwd=a).project == "proj-a"
+
+
+def test_flat_outputs_from_older_versions_move_to_their_project(ordo_home, capsys):
+    from ordo.session import Session, ordo_home as home
+
+    sess = Session.open()
+    runs = home() / "runs"
+    runs.mkdir(parents=True)
+    (runs / "20260101-000000-abcd.log").write_text("old output", encoding="utf-8")
+    (runs / "20260101-000001-ffff.log").write_text("orphan", encoding="utf-8")
+    sess.append("run", command="pytest", exit=1, raw_id="20260101-000000-abcd")
+    target, mine = cli.find_raw(sess, "last")
+    assert target.read_text(encoding="utf-8") == "old output" and target.parent == sess.runs_dir()
+    assert cli.find_raw(sess, "20260101-000001-ffff")[0].read_text(encoding="utf-8") == "orphan"  # still by id
+
+
+def test_prune_lists_and_removes_only_with_criteria_and_consent(ordo_home, capsys):
+    import json as _json
+    import shutil as _sh
+
+    from ordo.session import Session, ordo_home as home
+
+    gone_root = ordo_home / "deleted-project"
+    gone_root.mkdir()
+    gone = Session(path=home() / "sessions" / "deleted-project-0123456789.jsonl", root=gone_root)
+    gone.append("note", id="n000001", text="x")
+    cli.save_raw("log", gone)
+    _sh.rmtree(gone_root)
+    keep = Session.open()
+    keep.append("note", id="n000002", text="y")
+    code, out = run(capsys, "prune")
+    assert code == 0 and "deleted-project-0123456789" in out and "[folder missing]" in out
+    code, out = run(capsys, "prune", "--missing")  # not a terminal and no --yes: dry run
+    assert "nothing removed (dry run)" in out and gone.path.exists()
+    code, out = run(capsys, "prune", "--missing", "--yes")
+    assert code == 0 and not gone.path.exists() and not gone.runs_dir().exists() and keep.path.exists()
+    code, out = run(capsys, "prune", "--json")
+    assert [p["session"] for p in _json.loads(out)["projects"]] == [keep.key]

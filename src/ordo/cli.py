@@ -155,17 +155,62 @@ def _header(label: str, out: Outcome, extra: str = "") -> str:
     return " | ".join(parts)
 
 
-def save_raw(text: str) -> str:
-    """Save the full output (ANSI already stripped) so the agent can recover parts with `ordo show`."""
-    from .session import ordo_home
+def save_raw(text: str, session: Session) -> str:
+    """Save the full output (ANSI already stripped) so the agent can recover parts with `ordo show`.
 
-    folder = ordo_home() / "runs"
+    Kept per project (`~/.ordo/runs/<project>/`, the newest RAW_KEEP), so one busy project never evicts
+    another's outputs and `ordo show last` never returns another project's log.
+    """
+    folder = session.runs_dir()
     folder.mkdir(parents=True, exist_ok=True)
     rid = time.strftime("%Y%m%d-%H%M%S") + "-" + os.urandom(2).hex()
     (folder / f"{rid}.log").write_text(text, encoding="utf-8")
     for f in sorted(folder.glob("*.log"))[:-RAW_KEEP]:
         f.unlink(missing_ok=True)
     return rid
+
+
+def migrate_flat_runs() -> int:
+    """Move outputs saved before they were kept per project into the folder of the project that recorded them.
+
+    Runs once (only while `~/.ordo/runs/*.log` exist). An output no session refers to stays where it is and
+    is still found by id.
+    """
+    from .session import ordo_home
+
+    runs = ordo_home() / "runs"
+    flat = {p.stem: p for p in runs.glob("*.log")} if runs.exists() else {}
+    moved = 0
+    if not flat:
+        return 0
+    for spath in (ordo_home() / "sessions").glob("*.jsonl"):
+        for ev in Session(path=spath, root=Path(".")).events():
+            src = flat.pop(ev.get("raw_id") or "", None)
+            if src is not None and src.exists():
+                dest = runs / spath.stem / src.name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                src.replace(dest)
+                moved += 1
+    return moved
+
+
+def find_raw(session: Session, rid: str | None) -> tuple[Path | None, list[Path]]:
+    """The saved output for `rid` (or the latest of this project) and this project's recent outputs.
+
+    An id is looked up in this project first, then in any project, then among outputs saved before
+    outputs were kept per project, so an id quoted anywhere keeps working.
+    """
+    from .session import ordo_home
+
+    migrate_flat_runs()
+    mine = sorted(session.runs_dir().glob("*.log")) if session.runs_dir().exists() else []
+    if rid in (None, "last"):
+        return (mine[-1] if mine else None), mine
+    runs = ordo_home() / "runs"
+    for candidate in [session.runs_dir() / f"{rid}.log", *runs.glob(f"*/{rid}.log"), runs / f"{rid}.log"]:
+        if candidate.exists():
+            return candidate, mine
+    return None, mine
 
 
 def emit(args, label: str, out: Outcome, extra: str = "", *, code: int | None = None, raw_id: str | None = None,
@@ -297,7 +342,7 @@ def cmd_run(args) -> int:
     out = _filter_or_bypass(args, GcMode.TOOL_OUTPUT, intent, text)
     if out.status is None:  # short output or fallback: status comes from the exit code
         out.status = "PASS" if code == 0 else "FAIL"
-    rid = save_raw(text)
+    rid = save_raw(text, args.session_obj)
     emit(args, "run", out, f"exit={code}", code=code, raw_id=rid)
     args.session_obj.append("run", command=" ".join(cmd), exit=code, intent=intent, cmd_seconds=round(elapsed, 2),
                             raw_id=rid, **out.event())
@@ -317,7 +362,7 @@ def cmd_filter(args) -> int:
         out = _slice_text(args, text.replace("\r\n", "\n"), name.replace("\\", "/"))
     else:
         out = _filter_or_bypass(args, mode, intent, clean(text))
-    rid = save_raw(text) if mode is not GcMode.CODE_SLICE else None
+    rid = save_raw(text, args.session_obj) if mode is not GcMode.CODE_SLICE else None
     emit(args, "filter", out, raw_id=rid)
     args.session_obj.append("filter", intent=intent, mode=mode.value, raw_id=rid, **out.event())
     return 0
@@ -447,7 +492,7 @@ def cmd_search(args) -> int:
         return 1
     intent = args.intent or f"Find where {args.pattern} is defined and used"
     out = _filter_or_bypass(args, GcMode.TOOL_OUTPUT, intent, text)
-    rid = save_raw(text)
+    rid = save_raw(text, args.session_obj)
     emit(args, "search", out, f"pattern={args.pattern!r}", raw_id=rid)
     args.session_obj.append("search", pattern=args.pattern, intent=intent, raw_id=rid, **out.event())
     return 0
@@ -764,7 +809,7 @@ def savings_report(home: Path) -> dict:
     total = {"calls": 0, "raw": 0, "sent": 0, "filtered": 0, "model_seconds": 0.0}
     first_ts = None
     for path in sorted((home / "sessions").glob("*.jsonl")):
-        project = re.sub(r"-[0-9a-f]{10}$", "", path.stem)
+        project = Session(path=path, root=Path(".")).project
         for ev in Session(path=path, root=Path(".")).events():
             if ev["kind"] not in ("run", "filter", "slice", "search") or "raw_tokens" not in ev:
                 continue
@@ -834,6 +879,74 @@ def cmd_savings(args) -> int:
     return 0
 
 
+def project_sessions() -> list[dict]:
+    """Every recorded session: project, root, last activity, saved outputs, and whether the root still exists."""
+    from .session import ordo_home
+
+    out = []
+    for spath in sorted((ordo_home() / "sessions").glob("*.jsonl")):
+        sess = Session(path=spath, root=Path("."))
+        last = max((ev.get("ts", 0) for ev in sess.events()), default=spath.stat().st_mtime)
+        runs = sess.runs_dir()
+        root = sess.root_recorded()
+        out.append({"session": sess.key, "project": sess.project, "root": root,
+                    "root_exists": None if root is None else Path(root).exists(),
+                    "last_activity": time.strftime("%Y-%m-%d", time.localtime(last)), "_last": last,
+                    "outputs": len(list(runs.glob("*.log"))) if runs.exists() else 0,
+                    "kb": round((spath.stat().st_size + sum(f.stat().st_size for f in runs.glob("*.log"))
+                                 if runs.exists() else spath.stat().st_size) / 1024)})
+    return out
+
+
+def cmd_prune(args) -> int:
+    """List projects with recorded memory; remove those whose folder is gone or that are inactive."""
+    items = project_sessions()
+    cutoff = time.time() - args.older_than * 86400 if args.older_than else None
+    for it in items:
+        reasons = []
+        if args.missing and it["root_exists"] is False:
+            reasons.append("folder no longer exists")
+        if cutoff is not None and it["_last"] < cutoff:
+            reasons.append(f"inactive for more than {args.older_than} days")
+        it["remove"] = reasons
+    targets = [it for it in items if it["remove"]]
+    criteria = args.missing or args.older_than
+    if args.json and not args.yes:
+        _print(json.dumps({"projects": [{k: v for k, v in it.items() if not k.startswith("_")} for it in items],
+                           "would_remove": [it["session"] for it in targets]}, ensure_ascii=False, indent=1))
+        return 0
+    if not args.json:
+        _print(f"# ordo prune | {len(items)} project(s) with recorded memory")
+        for it in items:
+            where = it["root"] or "(root not recorded yet)"
+            gone = " [folder missing]" if it["root_exists"] is False else ""
+            mark = "  -> remove: " + "; ".join(it["remove"]) if it["remove"] else ""
+            _print(f"{it['session']}  last {it['last_activity']}  {it['outputs']} output(s)  {it['kb']} KB  "
+                   f"{where}{gone}{mark}")
+    if not criteria:
+        if not args.json:
+            _print("  remove with --missing (folder gone) and/or --older-than DAYS; nothing is removed without them")
+        return 0
+    if not targets:
+        if not args.json:
+            _print("  nothing matches")
+        return 0
+    if not (args.yes or _confirm(f"Remove the memory and saved outputs of {len(targets)} project(s)?")):
+        if not args.json:
+            _print("  nothing removed (dry run); add --yes to remove")
+        return 0
+    from .session import ordo_home
+
+    for it in targets:
+        (ordo_home() / "sessions" / f"{it['session']}.jsonl").unlink(missing_ok=True)
+        runs = ordo_home() / "runs" / it["session"]
+        if runs.exists():
+            shutil.rmtree(runs, ignore_errors=True)
+    msg = f"removed {len(targets)} project(s): " + ", ".join(it["session"] for it in targets)
+    _print(json.dumps({"removed": [it["session"] for it in targets]}) if args.json else f"# ordo: {msg}")
+    return 0
+
+
 def cmd_stats(args) -> int:
     rows: dict[str, dict] = {}
     for ev in args.session_obj.events():
@@ -874,16 +987,13 @@ def cmd_stats(args) -> int:
 
 def cmd_show(args) -> int:
     """Recover the full output of a run/filter/search (the filter compresses, but the original is kept)."""
-    from .session import ordo_home
-
-    folder = ordo_home() / "runs"
-    logs = sorted(folder.glob("*.log")) if folder.exists() else []
-    if not logs:
-        print("ordo show: no saved output yet (run, filter and search save theirs)", file=sys.stderr)
+    target, logs = find_raw(args.session_obj, args.id)
+    if target is None and args.id in (None, "last"):
+        print("ordo show: no saved output in this project yet (run, filter and search save theirs)", file=sys.stderr)
         return 1
-    target = logs[-1] if args.id in (None, "last") else folder / f"{args.id}.log"
-    if not target.exists():
-        print(f"ordo show: unknown id {args.id!r}; recent: {', '.join(p.stem for p in logs[-5:])}", file=sys.stderr)
+    if target is None:
+        recent = ", ".join(p.stem for p in logs[-5:]) or "none in this project"
+        print(f"ordo show: unknown id {args.id!r}; recent: {recent}", file=sys.stderr)
         return 2
     lines = target.read_text(encoding="utf-8").split("\n")
     keep: list[int] = list(range(len(lines)))
@@ -1210,7 +1320,8 @@ commands
 │  ├─ forget    ID|TEXT                    retract a wrong or obsolete note or dead end
 │  ├─ compact   -i GOAL                    state ledger: goal, facts, dead ends, file states
 │  ├─ stats                                token savings for this session
-│  └─ savings   [--top N]                  tokens saved across all projects, per tool
+│  ├─ savings   [--top N]                  tokens saved across all projects, per tool
+│  └─ prune     [--missing|--older-than D] memory of all projects; remove stale ones
 ├─ setup     [--yes]                       check the server, download the model, run a test call
 ├─ guide                                   instructions for any coding agent (AGENTS.md)
 └─ mcp       [--no-run]                    serve these tools over MCP (stdio) for coding agents
@@ -1324,7 +1435,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     usages = {"run": "-i INTENT [--cmd-timeout S] -- CMD...", "filter": "-i INTENT [--mode MODE] [FILE]",
               "slice": "-i INTENT FILE", "search": "-i INTENT [-C N] PATTERN [PATH...]",
-              "dead-end": "ATTEMPT REASON", "note": "TEXT", "forget": "ID|TEXT [--all]", "memory": "[--grep RX] [--json]", "savings": "[--top N] [--json]", "edit": "ID [TEXT] [--reason R]", "compact": "-i GOAL [--from FILE] [--neural]",
+              "dead-end": "ATTEMPT REASON", "note": "TEXT", "forget": "ID|TEXT [--all]", "memory": "[--grep RX] [--json]", "savings": "[--top N] [--json]", "prune": "[--missing] [--older-than DAYS] [--yes]", "edit": "ID [TEXT] [--reason R]", "compact": "-i GOAL [--from FILE] [--neural]",
               "stats": "", "mcp": "[--no-run]", "show": "[ID|last] [--lines A-B] [--grep RX] [-C N] [--tail N]", "guide": "[--raw]", "setup": "[--yes] [--no-test]"}
 
     def add(name: str, summary: str, examples: list[str], func) -> argparse.ArgumentParser:
@@ -1402,6 +1513,12 @@ def build_parser() -> argparse.ArgumentParser:
     s = add("savings", "tokens Ordo kept out of the agent's context, across all projects, per tool and project",
             ["ordo savings", "ordo savings --top 5", "ordo savings --json"], cmd_savings)
     s.add_argument("--top", type=int, default=10, help="rows per table (default 10)")
+
+    s = add("prune", "list projects with recorded memory; remove those whose folder is gone or that are inactive",
+            ["ordo prune", "ordo prune --missing", "ordo prune --older-than 90 --yes"], cmd_prune)
+    s.add_argument("--missing", action="store_true", help="select projects whose folder no longer exists")
+    s.add_argument("--older-than", type=int, metavar="DAYS", help="select projects inactive for more than DAYS")
+    s.add_argument("-y", "--yes", action="store_true", help="remove without asking (otherwise: ask, or dry run)")
 
     s = add("show", "print exact lines of a saved run/filter/search output (the original is never lost)",
             ["ordo show last --grep KeyError", "ordo show 20261123-221502-ab12 --lines 120-160", "ordo show --tail 30"],

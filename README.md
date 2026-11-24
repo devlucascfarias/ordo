@@ -59,6 +59,7 @@ back to any installed `hf.co/devlucascfarias/ordo-3b` tag automatically. Manual 
 | `ordo compact -i GOAL` | writes the session's state ledger (goal, facts, dead ends, modified files) | `MEMORY_COMPACT` |
 | `ordo stats [--json]` | token savings telemetry for the session | |
 | `ordo savings [--top N] [--json]` | tokens kept out of the agent's context across all projects, per tool (pytest, tsc, cargo test...) and per project | |
+| `ordo prune [--missing] [--older-than DAYS] [--yes]` | lists every project with recorded memory; removes those whose folder is gone or that are inactive (asks first) | |
 | `ordo show [ID] [--grep RX] [--lines A-B]` | exact lines of a saved run/filter/search output (`raw=<id>` in the header) | |
 | `ordo setup [--yes] [--no-test]` | checks the model server, downloads the model if missing, runs a test call | |
 | `ordo guide` | instructions for coding agents, to paste into `AGENTS.md` | |
@@ -88,11 +89,14 @@ Use `--` before the command when it has its own flags that could clash (`ordo ru
   last change; otherwise it is `UNTESTED`. `--neural` asks the model instead, falling back
   to the deterministic ledger if the output fails the schema (the published Ordo 3B is not reliable
   in this mode yet).
-- Session memory lives in `~/.ordo/sessions/`, one file per repository (never inside your repo).
+- Everything is kept per project, outside your repo: memory in `~/.ordo/sessions/<project>.jsonl`, saved
+  outputs in `~/.ordo/runs/<project>/` (the newest 300 per project). `ordo show last` only sees the
+  current project; a `raw_id` works from anywhere. `ordo savings` and `ordo prune` look across projects.
   Notes and dead ends get a stable id when recorded (`ordo memory` lists them); an agent can correct one
   with `ordo edit` or retract it with `ordo forget`. The session file is append-only: edits and
   retractions are new records, so the history stays auditable.
-  Use `--session NAME` (or `ORDO_SESSION`) for parallel agents in the same repo.
+  Use `--session NAME` (or `ORDO_SESSION`) for parallel agents in the same repo; names are scoped to the
+  repository, so the same name in two projects never mixes.
 
 ### Configuration
 

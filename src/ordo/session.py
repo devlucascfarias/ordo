@@ -42,15 +42,39 @@ class Session:
     def open(cls, name: str | None = None, cwd: Path | None = None) -> "Session":
         root = repo_root(cwd)
         name = name or os.environ.get("ORDO_SESSION")
-        if name:
-            key = re.sub(r"[^\w.-]+", "_", name)
-        else:
-            key = f"{root.name}-{hashlib.sha1(str(root).lower().encode()).hexdigest()[:10]}"
+        key = f"{root.name}-{hashlib.sha1(str(root).lower().encode()).hexdigest()[:10]}"
+        if name:  # named sessions are scoped to the repository: `--session main` in two repos never mixes
+            key += "--" + re.sub(r"[^\w.-]+", "_", name)
         path = ordo_home() / "sessions" / f"{key}.jsonl"
         return cls(path=path, root=root)
 
+    @property
+    def key(self) -> str:
+        return self.path.stem
+
+    @property
+    def project(self) -> str:
+        """Repository folder name, from the session key (`<name>-<hash>[--<session>]`)."""
+        return re.sub(r"-[0-9a-f]{10}(--.*)?$", "", self.key)
+
+    def root_recorded(self) -> str | None:
+        """Project root written in the session file (None for files recorded before it was kept)."""
+        if not self.path.exists():
+            return None
+        for ev in self.events("meta"):
+            return ev.get("root")
+        return None
+
+    def runs_dir(self) -> Path:
+        """Saved raw outputs of this project (`ordo show`)."""
+        return ordo_home() / "runs" / self.key
+
     def append(self, kind: str, **data: Any) -> dict:
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.root_recorded() is None:  # where the project lives, so `ordo prune` can find stale sessions
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"ts": round(time.time(), 3), "kind": "meta", "root": str(self.root)},
+                                   ensure_ascii=False) + "\n")
         ev = {"ts": round(time.time(), 3), "kind": kind, **data}
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(ev, ensure_ascii=False) + "\n")
