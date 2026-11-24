@@ -36,7 +36,7 @@ class FakeModel:
 @pytest.fixture
 def model(monkeypatch):
     fake = FakeModel()
-    monkeypatch.setattr(cli, "call_ollama_ordo", fake)
+    monkeypatch.setattr(cli, "call_ordo", fake)
     return fake
 
 

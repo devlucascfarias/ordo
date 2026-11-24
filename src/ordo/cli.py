@@ -1,6 +1,6 @@
 """Ordo CLI: filters tool output, slices source files and keeps session memory for coding agents.
 
-Principle: the CLI never leaves the agent without a useful answer. If the model fails (Ollama down,
+Principle: the CLI never leaves the agent without a useful answer. If the model fails (server down,
 unrecoverable YAML), it prints the windowed raw output with a header explaining why (turn this off with
 --no-fallback). Verifier warnings are YAML comments (`# ordo: ...`), so the output is still valid YAML.
 """
@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import __version__
-from .client import DEFAULT_HOST, DEFAULT_MODEL, call_ollama_ordo
+from .client import DEFAULT_BASE_URL, DEFAULT_HOST, DEFAULT_MODEL, call_ordo
 from .contract import GcMode
 from .schema import parse_output
 from .session import Session
@@ -75,7 +75,8 @@ def run_model(args, mode: GcMode, intent: str, raw: str, *, source_lines: list[s
               raw_tokens: int | None = None) -> Outcome:
     raw_tokens = raw_tokens if raw_tokens is not None else est_tokens(raw)
     try:
-        res = call_ollama_ordo(mode, intent, raw, model=args.model, host=args.host, timeout=args.timeout)
+        res = call_ordo(mode, intent, raw, model=args.model, host=args.host, base_url=args.base_url,
+                        timeout=args.timeout)
     except Exception as e:  # noqa: BLE001 - any server failure becomes a fallback
         return _fallback(args, f"model call failed ({type(e).__name__}: {e})", raw, raw_tokens)
     parsed = parse_output(res.text, mode)
@@ -679,7 +680,7 @@ def cmd_guide(args) -> int:
     return 0
 
 
-TOP_HELP = f"""ordo {__version__} - context filter for coding agents (Ordo 3B via Ollama)
+TOP_HELP = f"""ordo {__version__} - context filter for coding agents (Ordo 3B, local model)
 
 usage: ordo <command> [options]
 
@@ -714,6 +715,7 @@ exit codes
 environment
   ORDO_MODEL (ordo:3b)   OLLAMA_HOST (127.0.0.1:11434)   ORDO_MAX_INPUT_TOKENS (6000)
   ORDO_SESSION (one per repository)   ORDO_HOME (~/.ordo)   ORDO_KEEP_ALIVE (30m)
+  ORDO_BASE_URL + ORDO_API_KEY: use an OpenAI-compatible server (llama.cpp, LM Studio, vLLM) instead of Ollama
 
 examples (run inside your project; paths are placeholders)
   ordo run -i "why does the build fail?" -- npm run build
@@ -724,7 +726,8 @@ examples (run inside your project; paths are placeholders)
 'ordo <command> -h' shows the options of a command.
 """
 
-COMMON_HELP = "common options: --json --model --host --budget --timeout --session --force --no-fallback"
+COMMON_HELP = ("common options: --json --model --host --base-url --budget --timeout --session --force "
+               "--no-fallback")
 
 
 class _Parser(argparse.ArgumentParser):
@@ -735,8 +738,10 @@ class _Parser(argparse.ArgumentParser):
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     g = common.add_argument_group("common options")
-    g.add_argument("--model", default=DEFAULT_MODEL, help="Ollama model (env ORDO_MODEL, default ordo:3b)")
+    g.add_argument("--model", default=DEFAULT_MODEL, help="model name (env ORDO_MODEL, default ordo:3b)")
     g.add_argument("--host", default=DEFAULT_HOST, help="Ollama URL (env OLLAMA_HOST)")
+    g.add_argument("--base-url", default=DEFAULT_BASE_URL,
+                   help="OpenAI-compatible server instead of Ollama: llama.cpp, LM Studio, vLLM (env ORDO_BASE_URL)")
     g.add_argument("--session", help="session name (env ORDO_SESSION; default: one per repository)")
     g.add_argument("--budget", type=int, default=DEFAULT_BUDGET,
                    help="max input tokens sent to the model (env ORDO_MAX_INPUT_TOKENS)")

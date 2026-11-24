@@ -25,8 +25,9 @@ pip install git+https://github.com/devlucascfarias/ordo.git
 ollama pull hf.co/devlucascfarias/ordo-3b      # or, in a clone of the HF repo: ollama create ordo:3b -f Modelfile
 ```
 
-Requires Python 3.10+ and a running [Ollama](https://ollama.com). The CLI looks for the model as
-`ordo:3b` and falls back to any installed `hf.co/devlucascfarias/ordo-3b` tag automatically.
+Requires Python 3.10+ and a running [Ollama](https://ollama.com), or any OpenAI-compatible server
+(see [Other model servers](#other-model-servers)). The CLI looks for the model as `ordo:3b` and falls
+back to any installed `hf.co/devlucascfarias/ordo-3b` tag automatically.
 
 ## Commands
 
@@ -78,9 +79,26 @@ Use `--` before the command when it has its own flags that could clash (`ordo ru
 | `ORDO_SESSION` | one session per repository |
 | `ORDO_KEEP_ALIVE` | `30m` (how long Ollama keeps the model loaded) |
 | `ORDO_HOME` | `~/.ordo` |
+| `ORDO_BASE_URL` | unset (Ollama). Set it to use an OpenAI-compatible server instead |
+| `ORDO_API_KEY` | unset (sent as a Bearer token when the server needs one) |
 
 Exit codes: `run` returns the command's code (127 if not found, 124 on `--cmd-timeout`); `2` for usage
 errors; `3` with `--no-fallback` when the model fails; `search` returns `1` when nothing matches.
+
+## Other model servers
+
+Ordo runs on any server with an OpenAI-compatible `/v1/chat/completions` endpoint: llama.cpp
+(`llama-server`), LM Studio, vLLM, LocalAI. Point `ORDO_BASE_URL` (or `--base-url`) at it:
+
+```bash
+llama-server -m ordo-3b.gguf -c 16384 --port 8080      # context of 16k tokens, as Ordo expects
+export ORDO_BASE_URL=http://127.0.0.1:8080              # /v1 is added when missing
+ordo run -i "why does the build fail?" -- npm run build
+```
+
+The model is picked from the server's `/v1/models` list: the configured `ORDO_MODEL` if served, else a
+model whose name contains `ordo`, else the only model served. Set the context size on the server; Ollama's
+own `/v1` endpoint ignores it, so with Ollama keep the default native backend.
 
 ## Use as an MCP server
 
