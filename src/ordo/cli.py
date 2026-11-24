@@ -82,9 +82,15 @@ def run_model(args, mode: GcMode, intent: str, raw: str, *, source_lines: list[s
     parsed = parse_output(res.text, mode)
     if not parsed.yaml_ok:
         return _fallback(args, "model returned invalid YAML", raw, raw_tokens)
-    text = res.text.strip() if parsed.raw_yaml_ok else _normalized(parsed.data)
+    data, repeats = _collapse_repeats(parsed.data)
+    if repeats:  # re-validate the collapsed structure; keep the repair flag of the original text
+        repaired = parsed.repaired
+        parsed = parse_output(_normalized(data), mode)
+        parsed.repaired = repaired
+    text = res.text.strip() if parsed.raw_yaml_ok and not repeats else _normalized(parsed.data)
     out = Outcome(text=text, raw_tokens=raw_tokens, out_tokens=res.output_tokens, seconds=res.seconds,
                   data=parsed.data)
+    out.warnings += repeats
     out.status = str(parsed.data.get("status")) if parsed.data.get("status") else None
     out.summary = parsed.data.get("summary") or parsed.data.get("active_goal")
     if getattr(res, "truncated", False):
@@ -99,9 +105,37 @@ def run_model(args, mode: GcMode, intent: str, raw: str, *, source_lines: list[s
             what = {"file": "file not in input", "line": "line not in input", "snippet": "snippet not verbatim",
                     "symbol": "symbol not in cited lines", "rule": "rule broken"}[c.kind]
             out.warnings.append(f"unverified: {what}: {c.target}" + (f" ({c.detail})" if c.detail else ""))
+    seen: set[str] = set()
+    out.warnings = [w for w in out.warnings if not (w in seen or seen.add(w))]
     if out.warnings:
         out.text += "\n" + "\n".join(f"# ordo: {w}" for w in out.warnings)
     return out
+
+
+def _collapse_repeats(data: dict) -> tuple[dict, list[str]]:
+    """Drop identical items the model repeated (a known v1 loop on logs with many similar errors).
+
+    Returns the cleaned data and warnings. Items that only share the same issue text are kept, but flagged
+    when it repeats three or more times, since that usually means the model looped over one error.
+    """
+    data, warnings = dict(data), []
+    for key in ("causal_trace", "relevant_symbols", "exact_snippets"):
+        items = data.get(key)
+        if not isinstance(items, list) or len(items) < 2:
+            continue
+        seen: set[str] = set()
+        kept = [it for it in items
+                if not ((k := json.dumps(it, sort_keys=True, default=str)) in seen or seen.add(k))]
+        if len(kept) < len(items):
+            warnings.append(f"repeated output: {len(items) - len(kept)} identical {key} item(s) collapsed")
+            data[key] = kept
+        if key != "exact_snippets":
+            issues = [str(it.get("issue", "")).strip() for it in kept if isinstance(it, dict)]
+            top = max(set(issues), key=issues.count) if issues else ""
+            if top and issues.count(top) >= 3:
+                warnings.append(f"repeated output: the same issue appears in {issues.count(top)} {key} items; "
+                                "the model may have looped, check with ordo show")
+    return data, warnings
 
 
 def _normalized(data: dict) -> str:

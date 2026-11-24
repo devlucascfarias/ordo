@@ -324,3 +324,27 @@ def test_ledger_marks_files_changed_after_the_last_test_as_untested(tmp_path):
     states = {f.file: f.test_status for f in cli.deterministic_ledger(
         type(sess)(path=tmp_path / "empty.jsonl", root=sess.root), "goal").modified_files_state}
     assert set(states.values()) == {"UNTESTED"}  # no test run at all
+
+
+def test_repeated_trace_items_are_collapsed_and_flagged(model, capsys, tmp_path):
+    item = "- file: src/app.py\n  lines: '12'\n  issue: Incompatible return value type\n"
+    model.reply = "status: FAIL\nsummary: mypy errors\ncausal_trace:\n" + item * 5 + \
+        "- file: src/app.py\n  lines: '30'\n  issue: Incompatible return value type\n" + \
+        "- file: src/app.py\n  lines: '41'\n  issue: Incompatible return value type\n"
+    log = tmp_path / "mypy.txt"
+    log.write_text("\n".join(f"src/app.py:{n}: error: Incompatible return value type" for n in (12, 30, 41) * 20),
+                   encoding="utf-8")
+    code, out = run(capsys, "filter", "-i", "which type errors?", str(log))
+    body = out.split("\n", 1)[1]
+    assert code == 0 and body.count("lines: '12'") == 1
+    assert "# ordo: repeated output: 4 identical causal_trace item(s) collapsed" in out
+    assert "the same issue appears in 3 causal_trace items" in out
+
+
+def test_distinct_trace_items_are_left_alone(model, capsys, tmp_path):
+    model.reply = ("status: FAIL\nsummary: two errors\ncausal_trace:\n- file: a.py\n  lines: '1'\n  issue: KeyError\n"
+                   "- file: b.py\n  lines: '2'\n  issue: ValueError\n")
+    log = tmp_path / "log.txt"
+    log.write_text("\n".join(["a.py:1: KeyError", "b.py:2: ValueError"] * 30), encoding="utf-8")
+    code, out = run(capsys, "filter", "-i", "why?", str(log))
+    assert code == 0 and "repeated output" not in out
