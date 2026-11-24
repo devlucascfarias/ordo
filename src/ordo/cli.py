@@ -577,7 +577,7 @@ def cmd_stats(args) -> int:
     from rich.console import Console
     from rich.table import Table
 
-    t = Table(title=f"ordo stats — {args.session_obj.path.name}", caption="in = estimated tokens of raw output; "
+    t = Table(title=f"ordo stats: {args.session_obj.path.name}", caption="in = estimated tokens of raw output; "
               "routes = model/bypass/fallback")
     for col in ("command", "calls", "in", "out", "saved", "routes", "warned", "time"):
         t.add_column(col, justify="right" if col != "command" else "left", no_wrap=True)
@@ -714,8 +714,33 @@ def cmd_mcp(args) -> int:
 
 
 def cmd_guide(args) -> int:
-    """Instructions to paste into the project's AGENTS.md."""
-    _print(GUIDE)
+    """Instructions to paste into the project's AGENTS.md.
+
+    Plain Markdown when piped, redirected, called through MCP or with --raw (what agents read and what goes
+    into AGENTS.md); rendered with rich only for a person at an interactive terminal.
+    """
+    interactive = _SINK.get() is None and sys.stdout.isatty() and not args.raw
+    if not interactive:
+        _print(GUIDE)
+        return 0
+    from rich.console import Console
+    from rich.markdown import Heading, Markdown
+    from rich.text import Text
+
+    class _LeftHeading(Heading):  # rich centers headings; a reference text reads better left-aligned
+        def __rich_console__(self, console, options):
+            self.text.justify = "left"
+            if self.tag != "h2":
+                yield Text("")
+            yield self.text
+
+    class _Guide(Markdown):
+        elements = {**Markdown.elements, "heading_open": _LeftHeading}
+
+    console = Console()
+    console.width = min(console.width, 110)
+    console.print(_Guide(GUIDE, code_theme="ansi_dark", inline_code_theme="ansi_dark"))
+    console.print(Text("\nplain Markdown for AGENTS.md: ordo guide --raw >> AGENTS.md", style="dim"))
     return 0
 
 
@@ -797,7 +822,7 @@ def build_parser() -> argparse.ArgumentParser:
     usages = {"run": "-i INTENT [--cmd-timeout S] -- CMD...", "filter": "-i INTENT [--mode MODE] [FILE]",
               "slice": "-i INTENT FILE", "search": "-i INTENT [-C N] PATTERN [PATH...]",
               "dead-end": "ATTEMPT REASON", "note": "TEXT", "compact": "-i GOAL [--from FILE] [--neural]",
-              "stats": "", "mcp": "[--no-run]", "show": "[ID|last] [--lines A-B] [--grep RX] [-C N] [--tail N]", "guide": ""}
+              "stats": "", "mcp": "[--no-run]", "show": "[ID|last] [--lines A-B] [--grep RX] [-C N] [--tail N]", "guide": "[--raw]"}
 
     def add(name: str, summary: str, examples: list[str], func) -> argparse.ArgumentParser:
         s = sub.add_parser(name, parents=[common], help=summary, description=summary, formatter_class=fmt,
@@ -869,8 +894,9 @@ def build_parser() -> argparse.ArgumentParser:
             cmd_mcp)
     s.add_argument("--no-run", action="store_true", help="do not expose ordo_run (no command execution)")
 
-    add("guide", "instructions for coding agents, to paste into AGENTS.md",
-        ["ordo guide >> AGENTS.md"], cmd_guide)
+    s = add("guide", "instructions for coding agents, to paste into AGENTS.md (rendered at a terminal, Markdown when piped)",
+            ["ordo guide >> AGENTS.md", "ordo guide --raw   # plain Markdown at a terminal too"], cmd_guide)
+    s.add_argument("--raw", action="store_true", help="print plain Markdown even at an interactive terminal")
     return p
 
 

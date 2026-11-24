@@ -1,3 +1,4 @@
+import io
 import json
 import re
 import sys
@@ -241,3 +242,21 @@ def test_compact_neural_valid_and_invalid(model, capsys):
     assert "model output failed the schema; deterministic ledger instead" in out and "active_goal: goal B" in out
     data = json.loads(run(capsys, "stats", "--json")[1])
     assert data["by_command"]["run"]["calls"] == 1 and data["by_command"]["compact"]["calls"] == 2
+
+
+class _TTY(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def test_guide_is_plain_markdown_when_piped_and_rendered_at_a_terminal(monkeypatch, capsys):
+    code, out = run(capsys, "guide")  # capsys is not a TTY: exactly the Markdown agents read
+    assert code == 0 and out == cli.GUIDE.rstrip("\n") + "\n"
+    tty = _TTY()
+    monkeypatch.setattr(sys, "stdout", tty)
+    assert cli.main(["guide"]) == 0
+    shown = re.sub(r"\x1b\[[0-9;]*m", "", tty.getvalue())
+    assert "Output contract" in shown and "### " not in shown and "|---|" not in shown
+    tty2 = _TTY()
+    monkeypatch.setattr(sys, "stdout", tty2)
+    assert cli.main(["guide", "--raw"]) == 0 and tty2.getvalue() == cli.GUIDE.rstrip("\n") + "\n"
