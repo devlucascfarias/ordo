@@ -7,6 +7,7 @@ unrecoverable YAML), it prints the windowed raw output with a header explaining 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -453,8 +454,9 @@ def cmd_search(args) -> int:
 
 
 def cmd_dead_end(args) -> int:
-    args.session_obj.append("dead_end", attempt=args.attempt, reason=args.reason)
-    _print(f"# ordo: dead-end recorded in {args.session_obj.path.name}\n"
+    mid = _new_id("d")
+    args.session_obj.append("dead_end", id=mid, attempt=args.attempt, reason=args.reason)
+    _print(f"# ordo: dead-end {mid} recorded in {args.session_obj.path.name}\n"
            f"attempt: {json.dumps(args.attempt, ensure_ascii=False)}\nreason_failed: {json.dumps(args.reason, ensure_ascii=False)}")
     return 0
 
@@ -522,7 +524,7 @@ def deterministic_ledger(session: Session, goal: str) -> "MemoryCompact":
     The MEMORY_COMPACT output of the published ordo-3b does not follow the schema and invents facts,
     so this is the default path of `ordo compact`.
 
-    - Notes and dead ends are kept (and inherited from the previous compact).
+    - Notes and dead ends come from the session memory (`ordo memory`), with edits and retractions applied.
     - Command results become facts only for tests, builds, linters and type checkers run since the last
       compact and within ORDO_LEDGER_HOURS (default 12); they are recomputed, never inherited.
     - A modified file is PASS or FAIL only if the last test run started after its last change; otherwise
@@ -530,35 +532,22 @@ def deterministic_ledger(session: Session, goal: str) -> "MemoryCompact":
     """
     from .schema import DeadEnd, FileState, MemoryCompact
 
-    facts: list[str] = []
-    dead: list[DeadEnd] = []
-    prev = session.last_compact()
-    if prev and prev.get("ledger"):
-        p = parse_output(prev["ledger"], GcMode.MEMORY_COMPACT)
-        if p.obj is not None:
-            facts += [f for f in p.obj.confirmed_facts if not f.startswith("Last `")]
-            dead += p.obj.dead_ends_do_not_repeat
+    mem = memory(session)
+    facts: list[str] = [m.text for m in mem if m.kind == "note"]
+    dead: list[DeadEnd] = [DeadEnd(attempt=m.text, reason_failed=m.reason) for m in mem if m.kind == "dead_end"]
     oldest = time.time() - _ledger_window_seconds()
     last_by_cmd: dict[str, dict] = {}
     last_test: dict | None = None
     for ev in session.since_last_compact():
-        if ev["kind"] == "note":
-            facts.append(ev["text"])
-        elif ev["kind"] == "dead_end":
-            dead.append(DeadEnd(attempt=ev["attempt"], reason_failed=ev["reason"]))
-        elif ev["kind"] == "run" and ev.get("ts", 0) >= oldest and _CHECK_CMD.search(ev["command"]):
+        if ev["kind"] == "run" and ev.get("ts", 0) >= oldest and _CHECK_CMD.search(ev["command"]):
             last_by_cmd[ev["command"]] = ev
             if _TEST_CMD.search(ev["command"]):
                 last_test = ev
     for cmd, ev in last_by_cmd.items():
         # only what the process reported: the model's summary can be wrong and must not become a "fact"
         facts.append(f"Last `{cmd}`: exit {ev['exit']} ({'PASS' if ev['exit'] == 0 else 'FAIL'})")
-    forgotten = {(e.get("target"), e.get("text")) for e in session.events("forget")}
     seen: set[str] = set()
-    facts = [f for f in facts if ("note", f) not in forgotten and not (f in seen or seen.add(f))]
-    seen_d: set[str] = set()
-    dead = [d for d in dead if ("dead_end", d.attempt) not in forgotten
-            and not (d.attempt in seen_d or seen_d.add(d.attempt))]
+    facts = [f for f in facts if not (f in seen or seen.add(f))]
     test_started = None if last_test is None else last_test["ts"] - (last_test.get("cmd_seconds") or 0)
     test_result = None if last_test is None else ("PASS" if last_test["exit"] == 0 else "FAIL")
     files = []
@@ -613,43 +602,136 @@ def _strip_comments(text: str) -> str:
 
 
 def cmd_note(args) -> int:
-    args.session_obj.append("note", text=args.text)
-    _print(f"# ordo: note recorded in {args.session_obj.path.name}")
+    mid = _new_id("n")
+    args.session_obj.append("note", id=mid, text=args.text)
+    _print(f"# ordo: note {mid} recorded in {args.session_obj.path.name}")
     return 0
 
 
-def memory_items(session: Session) -> list[tuple[str, str, str]]:
-    """Active notes and dead ends as (id, kind, text): n1, n2... for notes, d1, d2... for dead ends."""
-    ledger = deterministic_ledger(session, "")
-    notes = [f for f in ledger.confirmed_facts if not f.startswith("Last `")]
-    items = [(f"n{i}", "note", f) for i, f in enumerate(notes, 1)]
-    items += [(f"d{i}", "dead_end", d.attempt) for i, d in enumerate(ledger.dead_ends_do_not_repeat, 1)]
-    return items
+@dataclass
+class MemItem:
+    id: str
+    kind: str  # note | dead_end
+    text: str  # the fact, or the attempt of a dead end
+    reason: str = ""
+
+
+def _new_id(prefix: str) -> str:
+    return prefix + os.urandom(3).hex()
+
+
+def _legacy_id(prefix: str, ev: dict, text: str) -> str:  # records written before ids existed
+    return prefix + hashlib.sha1(f"{ev.get('ts')}|{text}".encode()).hexdigest()[:6]
+
+
+def memory(session: Session) -> list[MemItem]:
+    """Notes and dead ends with edits and retractions applied, in creation order.
+
+    Ids are stable: assigned when the item is recorded, never renumbered. Facts that a model-based compact
+    (`--neural`, `--from`) added are included too, with an id derived from their text, so they can be
+    edited or retracted like any other item.
+    """
+    items: dict[str, MemItem] = {}
+
+    def add(item: MemItem) -> None:
+        if not any(m.kind == item.kind and m.text == item.text for m in items.values()):
+            items[item.id] = item
+
+    for ev in session.events():
+        kind = ev["kind"]
+        if kind == "note":
+            add(MemItem(ev.get("id") or _legacy_id("n", ev, ev["text"]), "note", ev["text"]))
+        elif kind == "dead_end":
+            add(MemItem(ev.get("id") or _legacy_id("d", ev, ev["attempt"]), "dead_end", ev["attempt"], ev["reason"]))
+        elif kind == "compact" and ev.get("route") == "model" and ev.get("ledger"):
+            p = parse_output(ev["ledger"], GcMode.MEMORY_COMPACT)
+            obj = p.obj or p.lenient
+            for f in getattr(obj, "confirmed_facts", []) or []:
+                if not f.startswith("Last `"):
+                    add(MemItem("n" + hashlib.sha1(f.encode()).hexdigest()[:6], "note", f))
+            for d in getattr(obj, "dead_ends_do_not_repeat", []) or []:
+                add(MemItem("d" + hashlib.sha1(d.attempt.encode()).hexdigest()[:6], "dead_end", d.attempt,
+                            d.reason_failed))
+        elif kind == "edit" and ev.get("id") in items:
+            m = items[ev["id"]]
+            m.text = ev.get("text") or m.text
+            m.reason = ev.get("reason") or m.reason
+        elif kind == "forget":
+            if ev.get("id"):
+                items.pop(ev["id"], None)
+            else:  # older retractions recorded the kind and text
+                for k in [k for k, m in items.items() if m.kind == ev.get("target") and m.text == ev.get("text")]:
+                    items.pop(k)
+    return list(items.values())
+
+
+def _find_memory(items: list[MemItem], key: str) -> list[MemItem]:
+    key = key.strip()
+    return [m for m in items if m.id == key] or [m for m in items if key.casefold() in m.text.casefold()]
+
+
+def _memory_lines(items: list[MemItem]) -> str:
+    return "\n".join(f"{m.id}  {m.text}" + (f"  (failed: {m.reason})" if m.kind == "dead_end" else "")
+                     for m in items)
+
+
+def cmd_memory(args) -> int:
+    """List the session memory (notes and dead ends) with their stable ids."""
+    items = memory(args.session_obj)
+    if args.grep:
+        rx = re.compile(args.grep, 0 if any(c.isupper() for c in args.grep) else re.IGNORECASE)
+        items = [m for m in items if rx.search(m.text) or rx.search(m.reason)]
+    if args.json:
+        _print(json.dumps({"session": args.session_obj.path.name,
+                           "items": [{"id": m.id, "kind": m.kind, "text": m.text,
+                                      **({"reason": m.reason} if m.kind == "dead_end" else {})} for m in items]},
+                          ensure_ascii=False, indent=1))
+        return 0
+    _print(f"# ordo memory | {args.session_obj.path.name} | {len(items)} item(s); n = note, d = dead end")
+    if items:
+        _print(_memory_lines(items))
+    return 0
+
+
+def cmd_edit(args) -> int:
+    """Rewrite a note, or the attempt or reason of a dead end, keeping its id."""
+    hits = [m for m in memory(args.session_obj) if m.id == args.id]
+    if not hits:
+        _print(f"# ordo edit: no item with id {args.id!r}; `ordo memory` lists the ids")
+        return 1
+    m = hits[0]
+    if not args.text and not args.reason:
+        _print("# ordo edit: give the new text, --reason, or both")
+        return 2
+    if args.reason and m.kind != "dead_end":
+        _print(f"# ordo edit: {m.id} is a note; --reason applies to dead ends only")
+        return 2
+    args.session_obj.append("edit", id=m.id, **({"text": args.text} if args.text else {}),
+                            **({"reason": args.reason} if args.reason else {}))
+    _print(f"# ordo: edited {m.id}: {args.text or m.text}" + (f"  (failed: {args.reason})" if args.reason else ""))
+    return 0
 
 
 def cmd_forget(args) -> int:
     """Retract a note or a dead end that is wrong or obsolete (the record stays in the session file)."""
-    items = memory_items(args.session_obj)
+    items = memory(args.session_obj)
     if not args.item:
-        if not items:
-            _print("# ordo forget: no notes or dead ends recorded")
-            return 0
-        _print("# ordo forget: active notes (n) and dead ends (d); run `ordo forget <id>` to retract one")
-        _print("\n".join(f"{i}: {t}" for i, _, t in items))
+        _print("# ordo forget: give an id or text; active items:" if items else
+               "# ordo forget: no notes or dead ends recorded")
+        if items:
+            _print(_memory_lines(items))
         return 0
-    key = args.item.strip()
-    hits = [it for it in items if it[0] == key.lower()] or \
-        [it for it in items if key.casefold() in it[2].casefold()]
+    hits = _find_memory(items, args.item)
     if not hits:
-        _print(f"# ordo forget: nothing matches {key!r}; `ordo forget` lists the ids")
+        _print(f"# ordo forget: nothing matches {args.item!r}; `ordo memory` lists the ids")
         return 1
     if len(hits) > 1 and not args.all:
-        _print(f"# ordo forget: {len(hits)} items match {key!r}; use an id, or --all to retract all of them")
-        _print("\n".join(f"{i}: {t}" for i, _, t in hits))
+        _print(f"# ordo forget: {len(hits)} items match {args.item!r}; use an id, or --all to retract all of them")
+        _print(_memory_lines(hits))
         return 2
-    for _, kind, text in hits:
-        args.session_obj.append("forget", target=kind, text=text)
-        _print(f"# ordo: forgot {kind.replace('_', ' ')}: {text}")
+    for m in hits:
+        args.session_obj.append("forget", id=m.id)
+        _print(f"# ordo: forgot {m.id}: {m.text}")
     return 0
 
 
@@ -755,7 +837,9 @@ output is always kept and can be read back verbatim.
 | Read original lines | `ordo show <raw_id> --grep "<regex>"` or `--lines A-B` or `--tail N` |
 | Record a failed approach | `ordo dead-end "<attempt>" "<reason it failed>"` |
 | Record a confirmed fact | `ordo note "<fact, with path:line>"` |
-| Retract a wrong or obsolete note or dead end | `ordo forget` (lists ids), then `ordo forget <id>` |
+| List the memory with stable ids | `ordo memory` (or `ordo memory --grep "<regex>"`) |
+| Correct a note or dead end | `ordo edit <id> "<new text>"` (dead ends: `--reason "<new reason>"`) |
+| Retract a wrong or obsolete one | `ordo forget <id>` |
 | Print the session state | `ordo compact -i "<current goal>"` |
 
 `-i` is the question the output must answer. Be specific: name the failing test, module or symptom
@@ -784,7 +868,8 @@ output is always kept and can be read back verbatim.
 1. Route long-running or verbose commands through `ordo run`; run short commands directly.
 2. When the summary is not enough, use `ordo show <raw_id>` instead of re-running the command.
 3. After an approach fails, record it with `ordo dead-end`; after verifying a fact, record it with `ordo note`.
-   When a recorded fact or dead end stops being true, retract it with `ordo forget`.
+   Keep the memory true: when a fact or dead end changes, `ordo edit` it; when it stops applying,
+   `ordo forget` it. Ids are stable, so an id read earlier still points to the same item.
 4. Before a long task, after many steps, or when resuming work, read `ordo compact` and do not repeat
    any listed dead end.
 
@@ -792,7 +877,8 @@ output is always kept and can be read back verbatim.
 
 Agents with MCP support can register `ordo mcp` (command `ordo`, args `["mcp"]`; add `--no-run` for
 read-only tools). Tools: ordo_run, ordo_filter, ordo_slice, ordo_search, ordo_show, ordo_dead_end, ordo_note,
-ordo_forget, ordo_compact, ordo_stats. They return the same structure as `--json`.
+ordo_memory, ordo_edit, ordo_forget, ordo_compact,
+ordo_stats. They return the same structure as `--json`.
 
 ### Configuration
 
@@ -1020,7 +1106,9 @@ commands
 ├─ session memory
 │  ├─ dead-end  ATTEMPT REASON             record an approach that failed (do not repeat it)
 │  ├─ note      TEXT                       record a confirmed fact
-│  ├─ forget    [ID|TEXT]                  retract a wrong or obsolete note or dead end
+│  ├─ memory    [--grep RX]                list notes and dead ends with stable ids
+│  ├─ edit      ID [TEXT] [--reason R]     rewrite a note or dead end, keeping its id
+│  ├─ forget    ID|TEXT                    retract a wrong or obsolete note or dead end
 │  ├─ compact   -i GOAL                    state ledger: goal, facts, dead ends, file states
 │  └─ stats                                token savings for this session
 ├─ setup     [--yes]                       check the server, download the model, run a test call
@@ -1136,7 +1224,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     usages = {"run": "-i INTENT [--cmd-timeout S] -- CMD...", "filter": "-i INTENT [--mode MODE] [FILE]",
               "slice": "-i INTENT FILE", "search": "-i INTENT [-C N] PATTERN [PATH...]",
-              "dead-end": "ATTEMPT REASON", "note": "TEXT", "forget": "[ID|TEXT] [--all]", "compact": "-i GOAL [--from FILE] [--neural]",
+              "dead-end": "ATTEMPT REASON", "note": "TEXT", "forget": "ID|TEXT [--all]", "memory": "[--grep RX] [--json]", "edit": "ID [TEXT] [--reason R]", "compact": "-i GOAL [--from FILE] [--neural]",
               "stats": "", "mcp": "[--no-run]", "show": "[ID|last] [--lines A-B] [--grep RX] [-C N] [--tail N]", "guide": "[--raw]", "setup": "[--yes] [--no-test]"}
 
     def add(name: str, summary: str, examples: list[str], func) -> argparse.ArgumentParser:
@@ -1185,9 +1273,20 @@ def build_parser() -> argparse.ArgumentParser:
             ['ordo note "pool exhausted when batch > 50 (src/pool.py:42)"'], cmd_note)
     s.add_argument("text", help="the fact, with paths and lines when possible")
 
-    s = add("forget", "retract a note or dead end that is wrong or obsolete (no argument: list them with ids)",
-            ["ordo forget", "ordo forget n3", 'ordo forget "Gemini quota"   # by text, if it matches one item'], cmd_forget)
-    s.add_argument("item", nargs="?", help="id from `ordo forget` (n1, d2...) or text contained in the item")
+    s = add("memory", "list the session memory (notes and dead ends) with stable ids",
+            ["ordo memory", 'ordo memory --grep "quota"', "ordo memory --json"], cmd_memory)
+    s.add_argument("--grep", help="regex on the text and reason (smart case)")
+
+    s = add("edit", "rewrite a note, or the attempt or reason of a dead end, keeping its id",
+            ['ordo edit n3f9a1c "cache is keyed by item and model"', 'ordo edit d07b2e4 --reason "fixed in 85bcce4"'],
+            cmd_edit)
+    s.add_argument("id", help="id from `ordo memory`")
+    s.add_argument("text", nargs="?", help="new text (the fact, or the attempt of a dead end)")
+    s.add_argument("--reason", help="new reason (dead ends only)")
+
+    s = add("forget", "retract a note or dead end that is wrong or obsolete",
+            ["ordo forget n3f9a1c", 'ordo forget "Gemini quota"   # by text, if it matches one item'], cmd_forget)
+    s.add_argument("item", nargs="?", help="id from `ordo memory` or text contained in exactly one item")
     s.add_argument("--all", action="store_true", help="retract every item that matches the text")
 
     s = add("compact", "state ledger of the session: goal, facts, dead ends, file states (MEMORY_COMPACT)",

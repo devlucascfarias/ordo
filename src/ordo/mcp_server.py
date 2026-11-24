@@ -34,8 +34,8 @@ INSTRUCTIONS = """Ordo condenses tool output into causal data (status, file, lin
   before acting on them.
 - Every run, filter and search returns a raw_id; ordo_show(raw_id, grep=..., lines=...) returns the exact
   original lines. Prefer it to re-running a command.
-- Record failed approaches with ordo_dead_end and verified facts with ordo_note; retract obsolete ones
-  with ordo_forget. Read ordo_compact before a
+- Record failed approaches with ordo_dead_end and verified facts with ordo_note. Keep the memory true:
+  ordo_memory lists items with stable ids, ordo_edit corrects one, ordo_forget retracts one. Read ordo_compact before a
   long task or when resuming work, and do not repeat any listed dead end."""
 
 
@@ -136,10 +136,22 @@ def build_server(allow_run: bool = True) -> MCPServer:
         return await _acall(["note", text])
 
     @server.tool(description=(
-        "Retract a note or dead end that is wrong or obsolete. Without `item`, list the active ones with ids "
-        "(n1, d2...). `item` is an id or text contained in exactly one item."))
-    async def ordo_forget(item: str | None = None) -> dict[str, Any]:
-        return await _acall(["forget"] + ([item] if item else []))
+        "List the session memory: notes and dead ends with stable ids (n..., d...). `grep` filters by regex. "
+        "Use it to find what to edit or retract in a long-running project."))
+    async def ordo_memory(grep: str | None = None) -> dict[str, Any]:
+        return await _acall(["memory", "--json"] + (["--grep", grep] if grep else []))
+
+    @server.tool(description=(
+        "Rewrite a memory item, keeping its id: `text` replaces a note, or the attempt of a dead end; "
+        "`reason` replaces the reason of a dead end. Ids come from ordo_memory."))
+    async def ordo_edit(id: str, text: str | None = None, reason: str | None = None) -> dict[str, Any]:
+        return await _acall(["edit", id] + ([text] if text else []) + (["--reason", reason] if reason else []))
+
+    @server.tool(description=(
+        "Retract a note or dead end that is wrong or obsolete. `item` is an id from ordo_memory, or text "
+        "contained in exactly one item."))
+    async def ordo_forget(item: str) -> dict[str, Any]:
+        return await _acall(["forget", item])
 
     @server.tool(description=(
         "Return the session state ledger: goal, confirmed facts, dead ends not to repeat, modified files with their "

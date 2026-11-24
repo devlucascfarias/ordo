@@ -362,19 +362,45 @@ def test_ledger_never_turns_the_model_summary_into_a_fact(tmp_path):
     assert facts == ["Last `mypy src`: exit 1 (FAIL)"]  # exit code only; the model said PASS and invented counts
 
 
-def test_forget_lists_and_retracts_notes_and_dead_ends(capsys):
+def _memory(capsys):
+    code, out = run(capsys, "memory", "--json")
+    return {m["text"]: m for m in json.loads(out)["items"]}
+
+
+def test_memory_ids_are_stable_and_items_can_be_edited_and_forgotten(capsys):
     run(capsys, "note", "cache is keyed by item only")
     run(capsys, "note", "quota resets at 13:00")
     run(capsys, "dead-end", "Gemini before 13:00", "quota exhausted")
-    code, out = run(capsys, "forget")
-    assert code == 0 and "n1: cache is keyed by item only" in out and "d1: Gemini before 13:00" in out
-    code, out = run(capsys, "forget", "13:00")  # matches a note and a dead end: ambiguous
+    mem = _memory(capsys)
+    cache, quota = mem["cache is keyed by item only"]["id"], mem["quota resets at 13:00"]["id"]
+    dead = mem["Gemini before 13:00"]["id"]
+    assert cache.startswith("n") and dead.startswith("d") and len({cache, quota, dead}) == 3
+    code, out = run(capsys, "forget", "13:00")  # a note and a dead end match: ambiguous
     assert code == 2 and "use an id" in out
-    code, out = run(capsys, "forget", "d1")
-    assert code == 0 and "forgot dead end: Gemini before 13:00" in out
-    code, out = run(capsys, "forget", "quota resets")
-    assert code == 0 and "forgot note: quota resets at 13:00" in out
+    code, out = run(capsys, "forget", quota)
+    assert code == 0 and f"forgot {quota}" in out
+    assert _memory(capsys)["cache is keyed by item only"]["id"] == cache  # ids do not shift after a removal
+    code, out = run(capsys, "edit", cache, "cache is keyed by item and model")
+    code2, out2 = run(capsys, "edit", dead, "--reason", "quota is per account")
+    assert code == 0 and code2 == 0
+    mem = _memory(capsys)
+    assert mem["cache is keyed by item and model"]["id"] == cache
+    assert mem["Gemini before 13:00"]["reason"] == "quota is per account"
     code, out = run(capsys, "compact", "-i", "goal")
-    assert "cache is keyed by item only" in out and "quota resets" not in out and "Gemini before" not in out
-    code, out = run(capsys, "forget", "nothing like this")
-    assert code == 1
+    assert "cache is keyed by item and model" in out and "quota resets" not in out
+    assert "quota is per account" in out
+    assert run(capsys, "edit", cache, "--reason", "x")[0] == 2  # --reason is for dead ends only
+    assert run(capsys, "edit", "nffffff", "x")[0] == 1
+    assert run(capsys, "forget", "nothing like this")[0] == 1
+
+
+def test_memory_reads_records_written_before_ids(capsys, ordo_home):
+    from ordo.session import Session
+
+    sess = Session.open()
+    sess.append("note", text="legacy fact")
+    sess.append("dead_end", attempt="legacy attempt", reason="legacy reason")
+    sess.append("forget", target="note", text="nothing")  # old-style retraction, harmless
+    mem = _memory(capsys)
+    assert mem["legacy fact"]["id"].startswith("n") and mem["legacy attempt"]["reason"] == "legacy reason"
+    assert _memory(capsys)["legacy fact"]["id"] == mem["legacy fact"]["id"]  # derived ids are stable too
