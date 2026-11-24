@@ -1,8 +1,8 @@
+# ordo
+
 <p align="center">
   <img src="assets/ordo-guide.png" alt="ordo guide rendered in a terminal" width="800">
 </p>
-
-# ordo
 
 Command-line harness for **[Ordo 3B](https://huggingface.co/devlucascfarias/ordo-3b)**, a small local
 model that filters noisy tool output (test runs, builds, linters, large files) into compact causal
