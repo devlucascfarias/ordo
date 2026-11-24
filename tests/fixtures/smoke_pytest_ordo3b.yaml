@@ -1,0 +1,26 @@
+status: FAIL
+summary: 'Pytest failure in tests/test_settlement.py:88 (test_settle_multi_currency_batch): fx_rate in src/ledger/fx.py:12 raised KeyError: ''BRL'' (currency not in RATES).'
+causal_trace:
+- file: tests/test_settlement.py
+  lines: '88'
+  symbol: test_settle_multi_currency_batch
+  issue: Invoked settle(batch) without RATES['BRL'].
+- file: src/ledger/fx.py
+  lines: '12'
+  symbol: fx_rate
+  issue: RATES['BRL'] missing.
+exact_snippets:
+- location: src/ledger/fx.py:12
+  code: 'E       KeyError: ''BRL'''
+- location: tests/test_settlement.py:88
+  code: '    def test_settle_multi_currency_batch():
+>       batch = make_batch(["USD", "BRL"])
+>       result = settle(batch)
+
+tests/test_settlement.py:88:
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+src/ledger/settlement.py:41: in settle
+    rate = fx_rate(item.currency)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ '
+
+dropped_noise: Omitted 13 passing tests and 1 unrelated KeyError in src/ledger/fx.py:12.

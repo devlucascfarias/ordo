@@ -1,0 +1,22 @@
+[project]
+name = "ordo"
+version = "2.1.0"
+description = "Ordo 3B: Neural Context Filter & Active Episodic Memory for coding agents."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = ["httpx", "pydantic>=2", "pyyaml", "rich"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+mcp = ["mcp>=2.3"]
+
+[project.scripts]
+ordo = "ordo.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
