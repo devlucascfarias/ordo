@@ -54,6 +54,16 @@ def test_errors_come_back_as_data(model):
 def test_command_argv_uses_shell_only_for_metacharacters():
     assert _command_argv("pytest -q tests") == ["pytest", "-q", "tests"]
     assert _command_argv("npm test | tail -5")[-1] == "npm test | tail -5"
+    assert _command_argv("echo a & echo b")[-1] == "echo a & echo b"  # cmd.exe separator
+
+
+def test_note_and_dead_end_return_the_id_as_a_field(model):
+    srv = build_server()
+    note = _call(srv, "ordo_note", {"text": "fact"})
+    dead = _call(srv, "ordo_dead_end", {"attempt": "a", "reason": "r"})
+    assert note["id"].startswith("n") and dead["id"].startswith("d")
+    assert _call(srv, "ordo_note", {"text": "fact"})["id"] == note["id"]
+    assert _call(srv, "ordo_edit", {"id": note["id"], "text": "fact v2"})["exit"] == 0
 
 
 def test_invoke_never_writes_to_real_stdout(capsys, model):

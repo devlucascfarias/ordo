@@ -570,3 +570,34 @@ def test_ledger_keeps_the_latest_result_per_tool(tmp_path):
         {"ts": now - 20, "kind": "run", "command": "npx tsc --noEmit", "exit": 2}]), encoding="utf-8")
     facts = [f for f in cli.deterministic_ledger(sess, "g").confirmed_facts if f.startswith("Last `")]
     assert facts == ["Last `python -m pytest -q`: exit 0 (PASS)", "Last `npx tsc --noEmit`: exit 2 (FAIL)"]
+
+
+def test_recording_the_same_note_or_dead_end_again_returns_the_existing_id(capsys):
+    _, out = run(capsys, "note", "median uses s[mid+1]")
+    nid = re.search(r"note (n[0-9a-f]{6})", out).group(1)
+    code, out = run(capsys, "note", "median uses s[mid+1]")
+    assert code == 0 and f"note {nid} already recorded" in out
+    assert run(capsys, "edit", nid, "median must average s[mid-1] and s[mid]")[0] == 0  # the returned id works
+    _, out = run(capsys, "dead-end", "patch the test", "test must not change")
+    did = re.search(r"dead-end (d[0-9a-f]{6})", out).group(1)
+    _, out = run(capsys, "dead-end", "patch the test", "tests are the spec")
+    assert f"dead-end {did} already recorded" in out and "reason updated" in out
+    mem = _memory(capsys)
+    assert len(mem) == 2 and mem["patch the test"]["reason"] == "tests are the spec"
+
+
+def test_untracked_build_artifacts_are_not_modified_files(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    for rel in ("calc.py", "__pycache__/calc.cpython-313.pyc", "node_modules/x/index.js", "bin/tool.py"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("x", encoding="utf-8")
+    assert sorted(cli._git_changed(tmp_path)) == ["calc.py"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe quoting")
+def test_cmd_exe_command_line_keeps_inner_quotes(tmp_path):
+    cmd = ["cmd", "/d", "/s", "/c", f'"{sys.executable}" -c "print(\'ok\')" | findstr ok']
+    target, shell = cli._resolve_command(cmd)
+    code, out, _ = cli._execute(target, shell, 60, str(tmp_path))
+    assert code == 0 and out.decode().strip() == "ok"

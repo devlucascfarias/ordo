@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import tempfile
 import threading
@@ -23,7 +24,7 @@ from . import __version__
 from .cli import invoke
 
 _LOCK = threading.Lock()
-_SHELL_META = ("|", "&&", "||", ";", ">", "<", "$(", "`")
+_SHELL_META = ("|", "&", ";", ">", "<", "$(", "`")
 
 INSTRUCTIONS = """Ordo condenses tool output into causal data (status, file, line, symbol, error) with a local model.
 - Use ordo_run for tests, builds and linters whose output may be long; `exit` is the command's own exit code.
@@ -59,6 +60,14 @@ def _call(argv: list[str]) -> dict[str, Any]:
 
 async def _acall(argv: list[str]) -> dict[str, Any]:
     return await anyio.to_thread.run_sync(_call, argv)
+
+
+def _with_id(data: dict[str, Any]) -> dict[str, Any]:
+    """note/dead-end print the new id in text; expose it as a field so the agent can pass it to ordo_edit."""
+    m = re.search(r"\b(?:note|dead-end) ([nd][0-9a-f]{6})\b", data.get("text", ""))
+    if m:
+        data["id"] = m.group(1)
+    return data
 
 
 def _command_argv(command: str) -> list[str]:
@@ -129,11 +138,11 @@ def build_server(allow_run: bool = True) -> MCPServer:
 
     @server.tool(description="Record an approach that failed and why, so it is not tried again in this session.")
     async def ordo_dead_end(attempt: str, reason: str) -> dict[str, Any]:
-        return await _acall(["dead-end", attempt, reason])
+        return _with_id(await _acall(["dead-end", attempt, reason]))
 
     @server.tool(description="Record a confirmed fact (with path:line when possible) for the session ledger.")
     async def ordo_note(text: str) -> dict[str, Any]:
-        return await _acall(["note", text])
+        return _with_id(await _acall(["note", text]))
 
     @server.tool(description=(
         "List the session memory: notes and dead ends with stable ids (n..., d...). `grep` filters by regex. "

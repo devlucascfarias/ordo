@@ -274,6 +274,14 @@ def _resolve_command(cmd: list[str]) -> tuple[list[str] | str, bool]:
     exe = shutil.which(cmd[0])
     if exe is None:
         return cmd, False
+    if os.name == "nt" and os.path.basename(exe).lower() == "cmd.exe":
+        # cmd.exe does not parse the \" escapes subprocess would add: pass the command line as written
+        flags = [a for a in cmd[1:] if a.startswith("/")]
+        k = next((i for i, a in enumerate(cmd) if a.lower() in ("/c", "/k")), None)
+        if k is not None and k + 1 < len(cmd):
+            rest = " ".join(cmd[k + 1:])
+            body = f'"{rest}"' if any(f.lower() == "/s" for f in flags) else rest
+            return " ".join([_cmd_quote(exe)] + cmd[1:k + 1] + [body]), False
     if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
         return " ".join([_cmd_quote(exe)] + [_cmd_quote(a) for a in cmd[1:]]), True
     return [exe] + cmd[1:], False
@@ -516,6 +524,12 @@ def cmd_search(args) -> int:
 
 
 def cmd_dead_end(args) -> int:
+    if (m := _existing(args.session_obj, "dead_end", args.attempt)):
+        if m.reason != args.reason:  # same attempt, new reason: update it under the same id
+            args.session_obj.append("edit", id=m.id, reason=args.reason)
+        _print(f"# ordo: dead-end {m.id} already recorded in {args.session_obj.path.name}"
+               + ("; reason updated" if m.reason != args.reason else ""))
+        return 0
     mid = _new_id("d")
     args.session_obj.append("dead_end", id=mid, attempt=args.attempt, reason=args.reason)
     _print(f"# ordo: dead-end {mid} recorded in {args.session_obj.path.name}\n"
@@ -562,9 +576,15 @@ def _git_changed(root: Path) -> list[str]:
     files = []
     for line in out.stdout.splitlines():
         path = line[3:].split(" -> ")[-1].strip().strip('"')
-        if path and not path.endswith("/"):
+        if path and not path.endswith("/") and not (line.startswith("??") and _ARTIFACT.search(path)):
             files.append(path)
     return files
+
+
+# build and cache output that shows up as untracked in a repo without a .gitignore: never source state
+_ARTIFACT = re.compile(r"(^|/)(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache|\.tox|\.nox|\.venv|venv|"
+                       r"node_modules|\.next|\.gradle|\.idea|\.vscode|target|dist|build|out|bin|obj|coverage|"
+                       r"\.coverage[^/]*|\.eggs|[^/]+\.egg-info)(/|$)|\.(pyc|pyo|class|o|obj|so|dll|exe|pdb|log)$")
 
 
 _CHECK_CMD = re.compile(_TEST_CMD.pattern + r"|\b(tsc|eslint|ruff|mypy|pyright|flake8|clippy|golangci-lint|go (build|vet)|"
@@ -665,7 +685,15 @@ def _strip_comments(text: str) -> str:
     return "\n".join(l for l in text.splitlines() if not l.startswith("# ordo:"))
 
 
+def _existing(session: Session, kind: str, text: str) -> "MemItem | None":
+    """An active item with the same text: recording it again would give an id `memory` never shows."""
+    return next((m for m in memory(session) if m.kind == kind and m.text == text), None)
+
+
 def cmd_note(args) -> int:
+    if (m := _existing(args.session_obj, "note", args.text)):
+        _print(f"# ordo: note {m.id} already recorded in {args.session_obj.path.name}")
+        return 0
     mid = _new_id("n")
     args.session_obj.append("note", id=mid, text=args.text)
     _print(f"# ordo: note {mid} recorded in {args.session_obj.path.name}")
