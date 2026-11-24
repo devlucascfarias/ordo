@@ -1,0 +1,107 @@
+"""`ordo setup` against a fake Ollama server: missing model, download with --yes, test call, unreachable server."""
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+import pytest
+
+from ordo import cli, client
+
+REPLY = "status: FAIL\nsummary: 'KeyError: ''BRL'' in src/fx.py:12'\ncausal_trace:\n- file: src/fx.py\n  lines: '12'\n  issue: KeyError"
+
+
+class FakeOllama:
+    def __init__(self, models):
+        self.models, self.pulled = list(models), []
+        fake = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _json(self, body):
+                data = json.dumps(body).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                if self.path == "/api/tags":
+                    return self._json({"models": [{"name": m} for m in fake.models]})
+                self.send_response(404)
+                self.end_headers()
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if self.path == "/api/pull":
+                    fake.pulled.append(body["model"])
+                    events = [{"status": "pulling manifest"},
+                              {"status": "pulling abc", "total": 100, "completed": 50},
+                              {"status": "pulling abc", "total": 100, "completed": 100},
+                              {"status": "success"}]
+                    data = "".join(json.dumps(e) + "\n" for e in events).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/x-ndjson")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    fake.models.append(body["model"] + ":latest")
+                    return
+                if self.path == "/api/chat":
+                    return self._json({"message": {"content": REPLY}, "prompt_eval_count": 200, "eval_count": 30,
+                                       "total_duration": 1e9, "done_reason": "stop"})
+                self.send_response(404)
+                self.end_headers()
+
+        self.server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+
+@pytest.fixture
+def ollama(monkeypatch, tmp_path):
+    monkeypatch.setenv("ORDO_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("ORDO_BASE_URL", raising=False)
+    servers = []
+
+    def make(models):
+        s = FakeOllama(models)
+        servers.append(s)
+        return s
+
+    yield make
+    for s in servers:
+        s.server.shutdown()
+
+
+def _run(capsys, *argv):
+    code = cli.main(["setup", *argv])
+    return code, capsys.readouterr().out
+
+
+def test_ready_server_and_model_pass_the_test_call(ollama, capsys):
+    srv = ollama(["ordo:3b"])
+    code, out = _run(capsys, "--host", srv.url)
+    assert code == 0 and "[ok] model: ordo:3b" in out and "[ok] test call" in out and "cites src/fx.py" in out
+
+
+def test_missing_model_is_not_downloaded_without_consent(ollama, capsys):
+    srv = ollama(["llama3:8b"])
+    code, out = _run(capsys, "--host", srv.url, "--no-test")  # not a TTY: no prompt, no download
+    assert code == 1 and "[fail] model: Ordo is not installed" in out and "ordo setup --yes" in out
+    assert srv.pulled == []
+
+
+def test_yes_downloads_the_model_then_tests_it(ollama, capsys):
+    srv = ollama([])
+    code, out = _run(capsys, "--host", srv.url, "--yes")
+    assert code == 0 and srv.pulled == [client.PULL_NAME]
+    assert f"[ok] model: {client.PULL_NAME}:latest" in out and "[ok] test call" in out
+
+
+def test_unreachable_server_and_json_report(ollama, capsys):
+    code, out = _run(capsys, "--host", "http://127.0.0.1:9", "--json")
+    rep = json.loads(out)
+    assert code == 1 and rep["ok"] is False and rep["backend"] == "ollama" and rep["hints"]

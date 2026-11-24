@@ -26,12 +26,22 @@ causal_trace:
 
 ```bash
 pip install git+https://github.com/devlucascfarias/ordo.git
-ollama pull hf.co/devlucascfarias/ordo-3b      # or, in a clone of the HF repo: ollama create ordo:3b -f Modelfile
+ordo setup
+```
+
+`pip` installs the CLI only. `ordo setup` checks the model server, downloads the Ordo model through Ollama
+if it is missing (about 6.2 GB, after asking; `--yes` skips the question) and runs one test call:
+
+```text
+[ok] server: Ollama at http://127.0.0.1:11434 (3 model(s) installed)
+[ok] model: ordo:3b
+[ok] test call: 8.9s, valid YAML, status FAIL, cites src/fx.py
 ```
 
 Requires Python 3.10+ and a running [Ollama](https://ollama.com), or any OpenAI-compatible server
 (see [Other model servers](#other-model-servers)). The CLI looks for the model as `ordo:3b` and falls
-back to any installed `hf.co/devlucascfarias/ordo-3b` tag automatically.
+back to any installed `hf.co/devlucascfarias/ordo-3b` tag automatically. Manual install:
+`ollama pull hf.co/devlucascfarias/ordo-3b`.
 
 ## Commands
 
@@ -46,6 +56,7 @@ back to any installed `hf.co/devlucascfarias/ordo-3b` tag automatically.
 | `ordo compact -i GOAL` | writes the session's state ledger (goal, facts, dead ends, modified files) | `MEMORY_COMPACT` |
 | `ordo stats [--json]` | token savings telemetry for the session | |
 | `ordo show [ID] [--grep RX] [--lines A-B]` | exact lines of a saved run/filter/search output (`raw=<id>` in the header) | |
+| `ordo setup [--yes] [--no-test]` | checks the model server, downloads the model if missing, runs a test call | |
 | `ordo guide` | instructions for coding agents, to paste into `AGENTS.md` | |
 | `ordo mcp [--no-run]` | serve the tools over MCP for any MCP-capable agent | |
 

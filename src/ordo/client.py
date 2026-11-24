@@ -220,3 +220,25 @@ def call_ordo(
     if base_url:
         return call_openai_ordo(mode, intent, raw_input, model=model, base_url=base_url, timeout=timeout)
     return call_ollama_ordo(mode, intent, raw_input, model=model, host=host, timeout=timeout)
+
+
+# ---------------------------------------------------------------- installation
+
+PULL_NAME = "hf.co/devlucascfarias/ordo-3b"  # Ollama pulls the GGUF straight from Hugging Face
+
+
+def pull_model(host: str, name: str = PULL_NAME, progress=None) -> None:
+    """Download a model through the Ollama API, calling `progress(event)` for each status event."""
+    import json
+
+    with httpx.stream("POST", f"{normalize_host(host)}/api/pull", json={"model": name, "stream": True},
+                      timeout=httpx.Timeout(30.0, read=None)) as r:
+        r.raise_for_status()
+        for line in r.iter_lines():
+            if not line.strip():
+                continue
+            ev = json.loads(line)
+            if ev.get("error"):
+                raise RuntimeError(ev["error"])
+            if progress:
+                progress(ev)

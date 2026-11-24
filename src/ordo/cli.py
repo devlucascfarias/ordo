@@ -676,6 +676,7 @@ output is always kept and can be read back verbatim.
   Do not act on them before confirming with `ordo show <raw_id>`.
 - `# ordo: ... showing raw output`: the model was unavailable or returned invalid YAML; the body is the
   original output (windowed around errors). Read it as a normal log.
+  If it keeps happening, ask the user to run `ordo setup`, which diagnoses the model server.
 - Exit codes: `run` returns the command's own exit code (127 not found, 124 timeout); 2 is a usage error;
   `search` returns 1 when nothing matches.
 - `--json` on run, filter, slice, search and stats prints an envelope: `command`, `route` (model, bypass,
@@ -697,9 +698,9 @@ ordo_compact, ordo_stats. They return the same structure as `--json`.
 
 ### Configuration
 
-The model server is configured by environment, not by the agent: Ollama by default (`OLLAMA_HOST`,
-`ORDO_MODEL`), or an OpenAI-compatible server (llama.cpp, LM Studio, vLLM) via `ORDO_BASE_URL` and
-`ORDO_API_KEY`. Session memory is stored outside the repository, in `~/.ordo`.
+`ordo setup` checks the installation. The model server is configured by environment, not by the agent:
+Ollama by default (`OLLAMA_HOST`, `ORDO_MODEL`), or an OpenAI-compatible server (llama.cpp, LM Studio, vLLM)
+via `ORDO_BASE_URL` and `ORDO_API_KEY`. Session memory is stored outside the repository, in `~/.ordo`.
 """
 
 
@@ -711,6 +712,154 @@ def cmd_mcp(args) -> int:
         return 2
     serve(allow_run=not args.no_run)
     return 0
+
+
+SETUP_LOG = """============================= test session starts ==============================
+collected 3 items
+
+tests/test_fx.py ..F                                                     [100%]
+
+=================================== FAILURES ===================================
+_______________________________ test_convert_brl _______________________________
+    def test_convert_brl():
+>       assert convert(10, "BRL") == 1.8
+E       KeyError: 'BRL'
+
+src/fx.py:12: KeyError
+=========================== short test summary info ============================
+FAILED tests/test_fx.py::test_convert_brl - KeyError: 'BRL'
+========================= 1 failed, 2 passed in 0.04s ==========================
+"""
+HF_URL = "https://huggingface.co/devlucascfarias/ordo-3b"
+
+
+def _confirm(question: str) -> bool:
+    if _SINK.get() is not None or not (sys.stdin and sys.stdin.isatty() and sys.stdout.isatty()):
+        return False
+    try:
+        return input(f"{question} [Y/n] ").strip().lower() in ("", "y", "yes", "s", "sim")
+    except EOFError:
+        return False
+
+
+def _pull_progress():
+    """Progress for `ollama pull` events: one updating line at a terminal, a few plain lines otherwise."""
+    tty = sys.stderr.isatty()
+    last = {"pct": -10, "status": ""}
+
+    def show(ev: dict) -> None:
+        status, total, done = ev.get("status", ""), ev.get("total") or 0, ev.get("completed") or 0
+        if total:
+            pct = int(done * 100 / total)
+            if tty:
+                print(f"\r  {status[:40]:<40} {done / 1e9:5.2f}/{total / 1e9:.2f} GB {pct:3d}%", end="",
+                      file=sys.stderr, flush=True)
+            elif pct >= last["pct"] + 10:
+                print(f"  {status[:40]} {pct}%", file=sys.stderr, flush=True)
+                last["pct"] = pct
+        elif status != last["status"]:
+            print(("\n" if tty and last["status"].startswith("pulling") else "") + f"  {status}", file=sys.stderr,
+                  flush=True)
+        last["status"] = status
+
+    return show
+
+
+def cmd_setup(args) -> int:
+    """Check the model server, install the model if missing and run one test call."""
+    from .client import (PULL_NAME, find_ordo_model, installed_models, match_ordo, normalize_base_url,
+                         normalize_host, pull_model, served_models)
+
+    report: dict = {"backend": "openai" if args.base_url else "ollama", "server": None, "model": None, "test": None}
+    lines: list[str] = []
+
+    def step(ok: bool | None, text: str) -> None:
+        lines.append(f"[{'ok' if ok else 'skip' if ok is None else 'fail'}] {text}")
+        if not args.json:
+            _print(lines[-1])
+
+    def done(code: int, *hints: str) -> int:
+        report["ok"] = code == 0
+        report["hints"] = list(hints)
+        if args.json:
+            _print(json.dumps(report, ensure_ascii=False, indent=1))
+        else:
+            for h in hints:
+                _print(f"  {h}")
+        return code
+
+    name = None
+    if args.base_url:
+        base = normalize_base_url(args.base_url)
+        report["server"] = base
+        try:
+            names = served_models(base)
+        except Exception as e:  # noqa: BLE001
+            step(False, f"server: cannot reach {base} ({type(e).__name__})")
+            return done(1, "start your server, e.g.: llama-server -m ordo-3b.gguf -c 16384 --port 8080",
+                        f"the GGUF is in {HF_URL} (ordo-3b.gguf)")
+        step(True, f"server: {base} (OpenAI-compatible, {len(names)} model(s) listed)")
+        name = args.model if args.model in names else match_ordo(names) or (names[0] if len(names) == 1 else None)
+        if not names:
+            name = args.model
+        if name is None:
+            step(False, f"model: no Ordo model among {', '.join(names[:6])}")
+            return done(1, f"load ordo-3b.gguf from {HF_URL}, or set ORDO_MODEL to the served name")
+    else:
+        host = normalize_host(args.host)
+        report["server"] = host
+        try:
+            names = installed_models(host)
+        except Exception:  # noqa: BLE001
+            step(False, f"server: Ollama is not reachable at {host}")
+            if shutil.which("ollama"):
+                return done(1, "Ollama is installed but not running: start it with `ollama serve` or open the app")
+            return done(1, "install Ollama from https://ollama.com/download",
+                        "or use another server: set ORDO_BASE_URL (llama.cpp, LM Studio, vLLM)")
+        step(True, f"server: Ollama at {host} ({len(names)} model(s) installed)")
+        name = args.model if args.model in names else find_ordo_model(host)
+        if name is None:
+            question = f"Download {PULL_NAME} (about 6.2 GB) with Ollama?"
+            if not (args.yes or _confirm(question)):
+                step(False, "model: Ordo is not installed")
+                return done(1, "run `ordo setup --yes` to download it, or `ollama pull " + PULL_NAME + "`")
+            if not args.json:
+                _print(f"downloading {PULL_NAME} ...")
+            try:
+                pull_model(host, PULL_NAME, progress=None if args.json else _pull_progress())
+            except Exception as e:  # noqa: BLE001
+                step(False, f"model: download failed ({e})")
+                return done(1, f"retry with `ollama pull {PULL_NAME}`")
+            if not args.json and sys.stderr.isatty():
+                print(file=sys.stderr)
+            name = find_ordo_model(host) or PULL_NAME
+    report["model"] = name
+    step(True, f"model: {name}")
+
+    if args.no_test:
+        step(None, "test call skipped (--no-test)")
+        return done(0, "next: `ordo guide >> AGENTS.md`, or register `ordo mcp` in your agent")
+    if not args.json:
+        _print("running a test call (the first one loads the model and can take a minute) ...")
+    t0 = time.time()
+    try:
+        res = call_ordo(GcMode.TOOL_OUTPUT, "Which test fails and why?", SETUP_LOG, model=name, host=args.host,
+                        base_url=args.base_url, timeout=args.timeout)
+    except Exception as e:  # noqa: BLE001
+        report["test"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        step(False, f"test call failed ({type(e).__name__}: {e})")
+        return done(1, "check the server logs; with llama.cpp use a context of at least 16384 (-c 16384)")
+    parsed = parse_output(res.text, GcMode.TOOL_OUTPUT)
+    cites = "src/fx.py" in res.text
+    ok = parsed.yaml_ok and str((parsed.data or {}).get("status", "")).upper() == "FAIL"
+    report["test"] = {"ok": ok, "seconds": round(time.time() - t0, 1), "yaml": parsed.yaml_ok,
+                      "schema": parsed.schema_ok, "cites_failing_file": cites}
+    step(ok, f"test call: {time.time() - t0:.1f}s, " + ("valid YAML" if parsed.yaml_ok else "invalid YAML")
+         + (", status FAIL" if ok else "") + (", cites src/fx.py" if cites else ""))
+    if not ok:
+        return done(1, "the server answered but the output is not what Ordo produces; check the model name and "
+                       "the chat template")
+    return done(0, "next: `ordo guide >> AGENTS.md`, or register `ordo mcp` in your agent")
 
 
 def cmd_guide(args) -> int:
@@ -762,6 +911,7 @@ commands
 │  ├─ note      TEXT                       record a confirmed fact
 │  ├─ compact   -i GOAL                    state ledger: goal, facts, dead ends, file states
 │  └─ stats                                token savings for this session
+├─ setup     [--yes]                       check the server, download the model, run a test call
 ├─ guide                                   instructions for any coding agent (AGENTS.md)
 └─ mcp       [--no-run]                    serve these tools over MCP (stdio) for coding agents
 
@@ -875,7 +1025,7 @@ def build_parser() -> argparse.ArgumentParser:
     usages = {"run": "-i INTENT [--cmd-timeout S] -- CMD...", "filter": "-i INTENT [--mode MODE] [FILE]",
               "slice": "-i INTENT FILE", "search": "-i INTENT [-C N] PATTERN [PATH...]",
               "dead-end": "ATTEMPT REASON", "note": "TEXT", "compact": "-i GOAL [--from FILE] [--neural]",
-              "stats": "", "mcp": "[--no-run]", "show": "[ID|last] [--lines A-B] [--grep RX] [-C N] [--tail N]", "guide": "[--raw]"}
+              "stats": "", "mcp": "[--no-run]", "show": "[ID|last] [--lines A-B] [--grep RX] [-C N] [--tail N]", "guide": "[--raw]", "setup": "[--yes] [--no-test]"}
 
     def add(name: str, summary: str, examples: list[str], func) -> argparse.ArgumentParser:
         s = sub.add_parser(name, parents=[common], help=summary, description=summary, formatter_class=fmt,
@@ -946,6 +1096,12 @@ def build_parser() -> argparse.ArgumentParser:
             ["claude mcp add ordo -- ordo mcp", "ordo mcp --no-run   # read-only tools, no command execution"],
             cmd_mcp)
     s.add_argument("--no-run", action="store_true", help="do not expose ordo_run (no command execution)")
+
+    s = add("setup", "check the model server, download the Ordo model if missing, run a test call",
+            ["ordo setup", "ordo setup --yes   # download without asking", "ordo setup --json --no-test"],
+            cmd_setup)
+    s.add_argument("-y", "--yes", action="store_true", help="download the model without asking")
+    s.add_argument("--no-test", action="store_true", help="skip the test call")
 
     s = add("guide", "instructions for coding agents, to paste into AGENTS.md (rendered at a terminal, Markdown when piped)",
             ["ordo guide >> AGENTS.md", "ordo guide --raw   # plain Markdown at a terminal too"], cmd_guide)
