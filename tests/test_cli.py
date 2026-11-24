@@ -129,7 +129,7 @@ def test_json_envelope(model, capsys):
 
 def test_guide(capsys):
     code, out = run(capsys, "guide")
-    assert code == 0 and out.startswith("## Ordo") and "ordo show <id>" in out and "ordo run -i" in out
+    assert code == 0 and out.startswith("## Ordo") and "ordo show <raw_id>" in out and "ordo run -i" in out
 
 
 def test_run_bypass_short_output(model, capsys):

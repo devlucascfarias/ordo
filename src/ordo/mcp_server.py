@@ -25,11 +25,17 @@ from .cli import invoke
 _LOCK = threading.Lock()
 _SHELL_META = ("|", "&&", "||", ";", ">", "<", "$(", "`")
 
-INSTRUCTIONS = """Ordo filters noisy tool output for you. Prefer ordo_run over running tests, builds or linters
-directly when the output may be long: it returns the failure cause (file, line, symbol, error) as structured
-data plus a raw_id. If the summary is not enough, ordo_show(raw_id, grep=...) returns the exact original lines.
-Warnings starting with 'unverified:' mark citations not found in the input; check them with ordo_show.
-Record failed approaches with ordo_dead_end and facts with ordo_note; ordo_compact returns the session state."""
+INSTRUCTIONS = """Ordo condenses tool output into causal data (status, file, line, symbol, error) with a local model.
+- Use ordo_run for tests, builds and linters whose output may be long; `exit` is the command's own exit code.
+  Short output is returned unchanged in `text` (route "bypass").
+- `result` holds the parsed output (route "model"). Route "fallback" means the model was unavailable and
+  `text` is the original output, windowed around errors: read it as a normal log.
+- Warnings starting with "unverified:" mark citations not found in the input; confirm them with ordo_show
+  before acting on them.
+- Every run, filter and search returns a raw_id; ordo_show(raw_id, grep=..., lines=...) returns the exact
+  original lines. Prefer it to re-running a command.
+- Record failed approaches with ordo_dead_end and verified facts with ordo_note. Read ordo_compact before a
+  long task or when resuming work, and do not repeat any listed dead end."""
 
 
 def _call(argv: list[str]) -> dict[str, Any]:

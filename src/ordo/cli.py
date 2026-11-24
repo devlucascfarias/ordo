@@ -642,25 +642,64 @@ def cmd_show(args) -> int:
     return 0
 
 
-GUIDE = """## Ordo (context filter for this repository)
+GUIDE = """## Ordo: tool-output filter for this repository
 
-Use `ordo` instead of reading long tool output directly. It returns compact YAML with the cause of a
-failure (file, line, symbol, error) and keeps the full output retrievable.
+`ordo` runs commands and condenses their output into causal YAML (status, file, line, symbol, error) using a
+local model, so long test, build and lint logs cost a few hundred tokens instead of thousands. The full
+output is always kept and can be read back verbatim.
 
-- Run tests/builds/linters through it: `ordo run -i "<what you need to know>" -- <command>`
-  (exit code is the command's own; short output is passed through unchanged).
-- Already have output? `<command> 2>&1 | ordo filter -i "<question>"`
-- Large file? `ordo slice -i "<what to find>" <file>` returns symbols with exact 1-based line ranges.
-- Searching? `ordo search -i "<question>" <regex> [path]`
-- Need more than the summary? Every run/filter/search header has `raw=<id>`:
-  `ordo show <id> --grep "<regex>"` or `ordo show <id> --lines 120-160` prints the exact original lines.
-- Lines starting with `# ordo: unverified:` mark citations not found in the input: check them with `ordo show`.
-- Record what failed so you do not retry it: `ordo dead-end "<attempt>" "<why it failed>"`;
-  record facts with `ordo note "<fact with path:line>"`; before a long task or after many steps,
-  `ordo compact -i "<goal>"` prints the session state (goal, facts, dead ends, file states).
-- Add `--json` to run/filter/slice/search for a machine-readable envelope (result, exit, warnings, raw_id).
-- If your agent supports MCP, register `ordo mcp` (command `ordo`, args `["mcp"]`): the same tools appear
-  natively as ordo_run, ordo_filter, ordo_slice, ordo_search, ordo_show, ordo_dead_end, ordo_note, ordo_compact.
+### Commands
+
+| Task | Command |
+|---|---|
+| Run tests, builds, linters | `ordo run -i "<question>" -- <command> [args]` |
+| Condense output you already have | `ordo filter -i "<question>" <file>` (or pipe it on stdin) |
+| Locate code in a large file | `ordo slice -i "<symbol or behaviour>" <file>` |
+| Search the repository | `ordo search -i "<question>" <regex> [path]` |
+| Read original lines | `ordo show <raw_id> --grep "<regex>"` or `--lines A-B` or `--tail N` |
+| Record a failed approach | `ordo dead-end "<attempt>" "<reason it failed>"` |
+| Record a confirmed fact | `ordo note "<fact, with path:line>"` |
+| Print the session state | `ordo compact -i "<current goal>"` |
+
+`-i` is the question the output must answer. Be specific: name the failing test, module or symptom
+("why does test_refund_partial fail?"), not "check the output".
+
+### Output contract
+
+- First line is a header, e.g. `# ordo run | exit=1 | ~933 -> 249 tokens, 11.1s | raw=<raw_id>`
+  (`exit` only on `run`; `raw` on run, filter and search).
+- The body is YAML: `status` (PASS, FAIL, ERROR, WARN; FOUND or NOT_FOUND for slice and search), `summary`,
+  `causal_trace` (file, lines, symbol, issue), `exact_snippets`, `dropped_noise`. `slice` returns
+  `relevant_symbols` with 1-based line ranges.
+- `short output, passed through` in the header: output under ~40 lines is printed unchanged.
+- `# ordo: unverified: ...` comments mark citations the grounding check could not find in the input.
+  Do not act on them before confirming with `ordo show <raw_id>`.
+- `# ordo: ... showing raw output`: the model was unavailable or returned invalid YAML; the body is the
+  original output (windowed around errors). Read it as a normal log.
+- Exit codes: `run` returns the command's own exit code (127 not found, 124 timeout); 2 is a usage error;
+  `search` returns 1 when nothing matches.
+- `--json` on run, filter, slice, search and stats prints an envelope: `command`, `route` (model, bypass,
+  fallback), `status`, `exit`, `raw_id`, `tokens`, `warnings`, and `result` (model route) or `text`.
+
+### Working rules
+
+1. Route long-running or verbose commands through `ordo run`; run short commands directly.
+2. When the summary is not enough, use `ordo show <raw_id>` instead of re-running the command.
+3. After an approach fails, record it with `ordo dead-end`; after verifying a fact, record it with `ordo note`.
+4. Before a long task, after many steps, or when resuming work, read `ordo compact` and do not repeat
+   any listed dead end.
+
+### MCP
+
+Agents with MCP support can register `ordo mcp` (command `ordo`, args `["mcp"]`; add `--no-run` for
+read-only tools). Tools: ordo_run, ordo_filter, ordo_slice, ordo_search, ordo_show, ordo_dead_end, ordo_note,
+ordo_compact, ordo_stats. They return the same structure as `--json`.
+
+### Configuration
+
+The model server is configured by environment, not by the agent: Ollama by default (`OLLAMA_HOST`,
+`ORDO_MODEL`), or an OpenAI-compatible server (llama.cpp, LM Studio, vLLM) via `ORDO_BASE_URL` and
+`ORDO_API_KEY`. Session memory is stored outside the repository, in `~/.ordo`.
 """
 
 
