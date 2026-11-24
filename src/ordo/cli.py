@@ -1402,7 +1402,65 @@ def print_top_help() -> None:
     _print(TOP_HELP)
 
 
-class _Parser(argparse.ArgumentParser):
+# words people try that are not commands, and what they probably meant
+_ALIASES = {"usage": ["savings", "stats"], "status": ["stats"], "help": ["guide"], "install": ["setup"],
+            "init": ["setup"], "doctor": ["setup"], "check": ["setup"], "list": ["memory"], "ls": ["memory"],
+            "notes": ["memory"], "delete": ["forget"], "remove": ["forget"], "rm": ["forget"], "update": ["edit"],
+            "log": ["show"], "logs": ["show"], "cat": ["show"], "clean": ["prune"], "test": ["run"],
+            "exec": ["run"], "grep": ["search"], "find": ["search"], "summary": ["compact"], "server": ["mcp"]}
+
+
+def _suggestions(message: str, choices: list[str]) -> tuple[str | None, list[str]]:
+    """For an unknown command, the word typed and the closest real commands."""
+    import difflib
+
+    m = re.search(r"invalid choice: '([^']*)'", message)
+    if not m:
+        return None, []
+    word = m.group(1)
+    found = _ALIASES.get(word.lower(), []) + difflib.get_close_matches(word.lower(), choices, n=2, cutoff=0.6)
+    return word, list(dict.fromkeys(c for c in found if c in choices))
+
+
+class _ErrorStyle:
+    """argparse errors: colored with a suggestion for a person at a terminal, plain text otherwise. Exit 2."""
+
+    def error(self, message: str):  # noqa: D401
+        choices = sorted(next((list(a.choices) for a in self._actions
+                               if isinstance(a, argparse._SubParsersAction)), []))
+        word, hints = _suggestions(message, choices)
+        if word is not None:
+            head = f"unknown command '{word}'"
+            tips = [f"did you mean: {', '.join(f'ordo {h}' for h in hints)}"] if hints else []
+            tips.append("run `ordo` to see all commands")
+        elif self.prog == "ordo":  # e.g. an option the command does not take: argparse reports it here
+            cmd = next((a for a in sys.argv[1:] if a in choices), None) if _SINK.get() is None else None
+            head = message
+            tips = [f"run `ordo {cmd} -h` for its options" if cmd else "run `ordo <command> -h` for its options"]
+        else:
+            head = message
+            tips = [f"usage: {self.format_usage().replace('usage: ', '').strip()}",
+                    f"run `{self.prog} -h` for the options"]
+        if _SINK.get() is None and sys.stderr.isatty():
+            from rich.console import Console
+            from rich.text import Text
+
+            con = Console(stderr=True, highlight=False, soft_wrap=True)
+            con.print(Text.assemble(("ordo: ", "bold"), ("error: ", "bold red"), head))
+            for t in tips:
+                con.print(Text("  " + t, style="cyan" if t.startswith("did you mean") else "dim"))
+        else:
+            print(f"ordo: error: {head}", file=sys.stderr)
+            for t in tips:
+                print(f"  {t}", file=sys.stderr)
+        raise SystemExit(2)
+
+
+class _SubParser(_ErrorStyle, argparse.ArgumentParser):
+    pass
+
+
+class _Parser(_ErrorStyle, argparse.ArgumentParser):
     def format_help(self) -> str:
         return TOP_HELP if self.prog == "ordo" else super().format_help()
 
@@ -1430,7 +1488,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = _Parser(prog="ordo", add_help=True)
     p.add_argument("--version", action="version", version=f"ordo {__version__}")
-    sub = p.add_subparsers(dest="cmd", parser_class=argparse.ArgumentParser)
+    sub = p.add_subparsers(dest="cmd", parser_class=_SubParser)
     fmt = argparse.RawDescriptionHelpFormatter
 
     usages = {"run": "-i INTENT [--cmd-timeout S] -- CMD...", "filter": "-i INTENT [--mode MODE] [FILE]",

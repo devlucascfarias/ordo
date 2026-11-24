@@ -496,3 +496,30 @@ def test_prune_lists_and_removes_only_with_criteria_and_consent(ordo_home, capsy
     assert code == 0 and not gone.path.exists() and not gone.runs_dir().exists() and keep.path.exists()
     code, out = run(capsys, "prune", "--json")
     assert [p["session"] for p in _json.loads(out)["projects"]] == [keep.key]
+
+
+def test_unknown_command_suggests_the_closest_ones(capsys, monkeypatch):
+    import io
+
+    with pytest.raises(SystemExit) as e:
+        cli.main(["usage"])
+    err = capsys.readouterr().err
+    assert e.value.code == 2 and "unknown command 'usage'" in err and "ordo savings, ordo stats" in err
+    assert "\x1b[" not in err  # captured: plain text for agents
+    with pytest.raises(SystemExit):
+        cli.main(["stat"])
+    assert "did you mean: ordo stats" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as e:
+        cli.main(["slice"])  # error inside a command: its own usage line
+    err = capsys.readouterr().err
+    assert e.value.code == 2 and "usage: ordo slice -i INTENT FILE" in err
+
+    class TTY(io.StringIO):
+        def isatty(self):
+            return True
+
+    tty = TTY()
+    monkeypatch.setattr(sys, "stderr", tty)
+    with pytest.raises(SystemExit):
+        cli.main(["usage"])
+    assert "\x1b[" in tty.getvalue() and "ordo savings" in tty.getvalue()
