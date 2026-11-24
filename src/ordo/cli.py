@@ -24,11 +24,12 @@ from .client import DEFAULT_BASE_URL, DEFAULT_HOST, DEFAULT_MODEL, call_ordo
 from .contract import GcMode
 from .schema import parse_output
 from .session import Session
-from .textproc import clean, est_tokens, window_file, window_log
+from .textproc import clean, est_tokens, shorten_line, window_file, window_log
 from .verify import verify
 
 DEFAULT_BUDGET = int(os.environ.get("ORDO_MAX_INPUT_TOKENS", "6000"))
 BYPASS_LINES, BYPASS_TOKENS = 40, 400  # below this, the model spends more tokens than it saves
+LONG_LINE = 800  # characters; longer lines are shortened (start + marker + end) before the model
 RAW_KEEP = 300  # raw logs kept in ~/.ordo/runs (the oldest are removed)
 
 
@@ -101,10 +102,11 @@ def run_model(args, mode: GcMode, intent: str, raw: str, *, source_lines: list[s
     out.warnings += [e for e in parsed.errors]
     checked = parsed.obj or parsed.lenient
     if checked is not None:
-        rep = verify(checked, raw, mode, source_lines=source_lines)
+        rep = verify(checked, raw, mode, source_lines=source_lines, strict=True)
         for c in rep.failures:
             what = {"file": "file not in input", "line": "line not in input", "snippet": "snippet not verbatim",
-                    "symbol": "symbol not in cited lines", "rule": "rule broken"}[c.kind]
+                    "symbol": "symbol not in cited lines", "rule": "rule broken",
+                    "summary": "summary cites a location not in input"}[c.kind]
             out.warnings.append(f"unverified: {what}: {c.target}" + (f" ({c.detail})" if c.detail else ""))
     seen: set[str] = set()
     out.warnings = [w for w in out.warnings if not (w in seen or seen.add(w))]
@@ -234,11 +236,20 @@ def _filter_or_bypass(args, mode: GcMode, intent: str, text: str) -> Outcome:
     tokens = est_tokens(text)
     if not args.force and len(text.splitlines()) <= BYPASS_LINES and tokens <= BYPASS_TOKENS:
         return Outcome(text=text, raw_tokens=tokens, out_tokens=tokens, route="bypass")
+    lines = text.split("\n")
+    long_lines = sum(len(l) > LONG_LINE for l in lines)
+    if long_lines and mode is not GcMode.CODE_SLICE:  # dumps, minified code, overload lists: noise for the model
+        text = "\n".join(shorten_line(l, LONG_LINE) for l in lines)
     body, cut = window_log(text, args.budget)
     out = run_model(args, mode, intent, body, raw_tokens=tokens)
+    notes = []
     if cut and out.route == "model":
-        out.warnings.append(f"input exceeded ~{args.budget} tokens and was windowed before the model")
-        out.text += f"\n# ordo: {out.warnings[-1]}"
+        notes.append(f"input exceeded ~{args.budget} tokens and was windowed before the model")
+    if long_lines and mode is not GcMode.CODE_SLICE and out.route == "model":
+        notes.append(f"{long_lines} very long line(s) shortened before the model; `ordo show` has them in full")
+    for n in notes:
+        out.warnings.append(n)
+        out.text += f"\n# ordo: {n}"
     return out
 
 

@@ -523,3 +523,27 @@ def test_unknown_command_suggests_the_closest_ones(capsys, monkeypatch):
     with pytest.raises(SystemExit):
         cli.main(["usage"])
     assert "\x1b[" in tty.getvalue() and "ordo savings" in tty.getvalue()
+
+
+def test_strict_checks_flag_test_names_as_lines_and_wrong_summary_locations(model, capsys, tmp_path):
+    log = tmp_path / "log.txt"
+    log.write_text("\n".join(["tests/test_api.py::test_users FAILED"] * 30
+                             + ["src/api.py:12: KeyError: 'id'", "E   KeyError: 'id'"]), encoding="utf-8")
+    model.reply = ("status: FAIL\nsummary: \"KeyError in src/api.py:12, also see src/other.py:99 and v1.2.3:4\"\n"
+                   "causal_trace:\n- file: src/api.py\n  lines: '12'\n  issue: KeyError\n"
+                   "- file: tests/test_api.py\n  lines: test_users\n  issue: failing test\n")
+    code, out = run(capsys, "filter", "--force", "-i", "why?", str(log))
+    assert "lines is not a line number ('test_users')" in out
+    assert "summary cites a location not in input: src/other.py:99" in out
+    assert "src/api.py:12" not in "".join(l for l in out.splitlines() if "summary cites" in l)
+    assert "v1.2.3" not in out.split("# ordo:", 1)[1]  # version numbers are not locations
+
+
+def test_very_long_lines_are_shortened_before_the_model(model, capsys, tmp_path):
+    log = tmp_path / "mypy.txt"
+    giant = "src/app.py:219: note:     def Popen(" + "x: int = ..., " * 200 + ")"
+    log.write_text("\n".join([giant] * 3 + ["src/app.py:12: error: Name 'y' is not defined"] * 40), encoding="utf-8")
+    code, out = run(capsys, "filter", "-i", "which errors?", str(log))
+    sent = model.calls[-1]["raw"]
+    assert max(len(l) for l in sent.splitlines()) < 900 and "chars omitted" in sent
+    assert "3 very long line(s) shortened before the model" in out

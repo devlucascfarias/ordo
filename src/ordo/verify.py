@@ -17,7 +17,7 @@ _RANGE = re.compile(r"\d+")
 
 @dataclass
 class Check:
-    kind: str  # file | line | snippet | symbol | rule
+    kind: str  # file | line | snippet | symbol | rule | summary
     target: str
     ok: bool
     detail: str = ""
@@ -170,8 +170,33 @@ def _check_snippets_file(rep: VerifyReport, flines: list[str], snippets) -> None
         rep.add("snippet", s.location, not bad, "; ".join(bad[:2]))
 
 
-def verify(obj: _Strict, raw_input: str, mode: GcMode | str, *, source_lines: list[str] | None = None) -> VerifyReport:
-    """`source_lines`: in CODE_SLICE, the full file on disk (when raw_input is only an excerpt)."""
+_CITE = re.compile(r"(?<![\w/:.])([\w.-]*[/\\]?[\w./\\-]*\.[A-Za-z]{1,6}):(\d+)\b")
+
+
+def _check_strict(rep: VerifyReport, raw: str, summary: str, items: Iterable, *, log: bool,
+                  flines: list[str] | None) -> None:
+    """Checks the CLI adds for the agent (kept out of the benchmark's grounding metric for comparability)."""
+    bad = [it for it in items if not _RANGE.search(str(it.lines))]
+    if len(bad) <= 2:
+        for it in bad:
+            rep.add("rule", f"{norm_path(it.file)}: lines is not a line number ({it.lines!r})", False)
+    else:  # one warning, not one per item
+        rep.add("rule", f"{len(bad)} items have no line number in `lines` (e.g. {bad[0].lines!r})", False)
+    for path, n in _CITE.findall(summary or ""):
+        if path.startswith(("http", "www")) or not re.search(r"[A-Za-z]", path.rsplit(".", 1)[0]):
+            continue  # URLs, version numbers, durations
+        p, n = norm_path(path), int(n)
+        ok = _file_in(raw, p) and (1 <= n <= len(flines) if flines is not None else _line_in_log(raw, p, n))
+        rep.add("summary", f"{p}:{n}", ok)
+
+
+def verify(obj: _Strict, raw_input: str, mode: GcMode | str, *, source_lines: list[str] | None = None,
+           strict: bool = False) -> VerifyReport:
+    """`source_lines`: in CODE_SLICE, the full file on disk (when raw_input is only an excerpt).
+
+    `strict` (the CLI): also flag `lines` without a line number and `path:line` cited in the summary that
+    is not in the input.
+    """
     mode = GcMode(mode)
     rep = VerifyReport()
     raw = raw_input.replace("\\", "/")
@@ -180,12 +205,16 @@ def verify(obj: _Strict, raw_input: str, mode: GcMode | str, *, source_lines: li
             rep.add("rule", "PASS without trace", not obj.causal_trace and not obj.exact_snippets)
         _check_trace(rep, raw, obj.causal_trace, log=True, flines=None)
         _check_snippets_log(rep, raw, obj.exact_snippets)
+        if strict:
+            _check_strict(rep, raw, obj.summary, obj.causal_trace, log=True, flines=None)
     elif isinstance(obj, CodeSlice):
         flines = source_lines if source_lines is not None else file_lines(raw_input)
         if obj.status == "NOT_FOUND":
             rep.add("rule", "NOT_FOUND without symbols", not obj.relevant_symbols and not obj.exact_snippets)
         _check_trace(rep, raw, obj.relevant_symbols, log=False, flines=flines)
         _check_snippets_file(rep, flines, obj.exact_snippets)
+        if strict:
+            _check_strict(rep, raw, obj.summary, obj.relevant_symbols, log=False, flines=flines)
     elif isinstance(obj, MemoryCompact):
         for fs in obj.modified_files_state:
             rep.add("file", fs.file, _file_in(raw, fs.file))
