@@ -151,3 +151,12 @@ def test_verify_code_slice_against_file():
         })
         kinds = {c.kind for c in verify(wrong, raw, "CODE_SLICE").failures}
         assert kinds == {"symbol", "snippet"}
+
+
+def test_snippet_with_windows_paths_is_verbatim():
+    from ordo.schema import ToolOutput
+
+    raw = "tests\test_pricing.py:8: AssertionError\n>       assert unit_price(20.0, qty) == expected\n"
+    obj = ToolOutput(status="FAIL", summary="x", exact_snippets=[{"location": "tests/test_pricing.py:8",
+                     "code": "tests\test_pricing.py:8: AssertionError\n>       assert unit_price(20.0, qty) == expected"}])
+    assert verify(obj, raw, "TOOL_OUTPUT").ok

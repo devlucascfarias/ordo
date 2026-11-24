@@ -192,7 +192,7 @@ def test_slice_sends_numbered_file_and_verifies_against_disk(model, capsys, tmp_
     model.reply = ("status: FOUND\nsummary: x\nrelevant_symbols:\n- file: s.py\n  lines: '4-5'\n"
                    "  symbol: repair_yaml_output\n  issue: y\nexact_snippets:\n- location: s.py:4\n"
                    "  code: '4 | def repair_yaml_output(raw_text):'")
-    code, out = run(capsys, "slice", "-i", "where is repair_yaml_output", str(f))
+    code, out = run(capsys, "slice", "--force", "-i", "where is repair_yaml_output", str(f))
     raw = model.calls[0]["raw"]
     assert model.calls[0]["mode"] == "CODE_SLICE" and "4 | def repair_yaml_output(raw_text):" in raw
     assert "unverified" not in out
@@ -547,3 +547,26 @@ def test_very_long_lines_are_shortened_before_the_model(model, capsys, tmp_path)
     sent = model.calls[-1]["raw"]
     assert max(len(l) for l in sent.splitlines()) < 900 and "chars omitted" in sent
     assert "3 very long line(s) shortened before the model" in out
+
+
+def test_small_file_slice_is_shown_numbered_without_the_model(model, capsys, tmp_path):
+    f = tmp_path / "pricing.py"
+    f.write_text("TIERS = [(100, 0.15)]\n\n\ndef unit_price(base, qty):\n    return base\n", encoding="utf-8")
+    n = len(model.calls)
+    code, out = run(capsys, "slice", "-i", "where are tiers applied?", str(f))
+    assert code == 0 and len(model.calls) == n and "short output, passed through" in out
+    assert "4 | def unit_price(base, qty):" in out
+
+
+def test_ledger_keeps_the_latest_result_per_tool(tmp_path):
+    import json
+    import time
+
+    sess, *_ = _ledger_repo(tmp_path)
+    now = time.time()
+    sess.path.write_text("".join(json.dumps(e) + "\n" for e in [
+        {"ts": now - 60, "kind": "run", "command": "python -m pytest -v", "exit": 1},
+        {"ts": now - 30, "kind": "run", "command": "python -m pytest -q", "exit": 0},
+        {"ts": now - 20, "kind": "run", "command": "npx tsc --noEmit", "exit": 2}]), encoding="utf-8")
+    facts = [f for f in cli.deterministic_ledger(sess, "g").confirmed_facts if f.startswith("Last `")]
+    assert facts == ["Last `python -m pytest -q`: exit 0 (PASS)", "Last `npx tsc --noEmit`: exit 2 (FAIL)"]

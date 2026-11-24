@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import __version__
 from .client import DEFAULT_BASE_URL, DEFAULT_HOST, DEFAULT_MODEL, call_ordo
-from .contract import GcMode
+from .contract import GcMode, number_lines
 from .schema import parse_output
 from .session import Session
 from .textproc import clean, est_tokens, shorten_line, window_file, window_log
@@ -387,6 +387,12 @@ def source_lines(src: str) -> list[str]:
 
 def _slice_text(args, src: str, rel: str) -> Outcome:
     lines = source_lines(src)
+    tokens = est_tokens(src)
+    if not args.force and len(lines) <= BYPASS_LINES and tokens <= BYPASS_TOKENS:
+        # a small file costs fewer tokens than the model's answer: show it numbered, like `run` passes short output
+        out = Outcome(text=number_lines("\n".join(lines)), raw_tokens=tokens, out_tokens=tokens, route="bypass")
+        out.windowed = False
+        return out
     body, cut = window_file("\n".join(lines), args.intent, args.budget)
     raw = f"// file: {rel} ({len(lines)} lines)\n{body}"
     out = run_model(args, GcMode.CODE_SLICE, args.intent, raw, source_lines=lines, raw_tokens=est_tokens(src))
@@ -596,12 +602,14 @@ def deterministic_ledger(session: Session, goal: str) -> "MemoryCompact":
     last_test: dict | None = None
     for ev in session.since_last_compact():
         if ev["kind"] == "run" and ev.get("ts", 0) >= oldest and _CHECK_CMD.search(ev["command"]):
-            last_by_cmd[ev["command"]] = ev
+            # one result per tool: `pytest -v` that failed is superseded by a later `pytest -q` that passed
+            last_by_cmd.pop(tool_name(ev), None)
+            last_by_cmd[tool_name(ev)] = ev
             if _TEST_CMD.search(ev["command"]):
                 last_test = ev
-    for cmd, ev in last_by_cmd.items():
+    for ev in last_by_cmd.values():
         # only what the process reported: the model's summary can be wrong and must not become a "fact"
-        facts.append(f"Last `{cmd}`: exit {ev['exit']} ({'PASS' if ev['exit'] == 0 else 'FAIL'})")
+        facts.append(f"Last `{ev['command']}`: exit {ev['exit']} ({'PASS' if ev['exit'] == 0 else 'FAIL'})")
     seen: set[str] = set()
     facts = [f for f in facts if not (f in seen or seen.add(f))]
     test_started = None if last_test is None else last_test["ts"] - (last_test.get("cmd_seconds") or 0)

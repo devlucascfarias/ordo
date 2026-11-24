@@ -119,7 +119,8 @@ def _snippet_in_log(raw: str, code: str) -> list[str]:
     """Snippet lines that do NOT appear verbatim in the log (ignoring the `NN | ` prefix)."""
     raw_lines = {l.strip() for l in raw.splitlines()}
     missing = []
-    lines = [content.strip() for _, content in split_numbered(code)]
+    # the log reached us with `\` turned into `/` (Windows paths); compare the snippet the same way
+    lines = [content.strip() for _, content in split_numbered(code.replace("\\", "/"))]
     meaningful = [c for c in lines if c and not _trivial(c)]
     if not meaningful and any(lines):
         return ["(snippet has only trivial lines)"]
