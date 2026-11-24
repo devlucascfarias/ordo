@@ -53,6 +53,7 @@ back to any installed `hf.co/devlucascfarias/ordo-3b` tag automatically. Manual 
 | `ordo search -i INTENT PATTERN [PATHS]` | `rg` (or a built-in fallback) filtered by intent | `TOOL_OUTPUT` |
 | `ordo dead-end ATTEMPT REASON` | records an approach that failed, so the agent does not retry it | |
 | `ordo note TEXT` | records a confirmed fact | |
+| `ordo forget [ID\|TEXT]` | retracts a wrong or obsolete note or dead end (no argument: lists them with ids) | |
 | `ordo compact -i GOAL` | writes the session's state ledger (goal, facts, dead ends, modified files) | `MEMORY_COMPACT` |
 | `ordo stats [--json]` | token savings telemetry for the session | |
 | `ordo show [ID] [--grep RX] [--lines A-B]` | exact lines of a saved run/filter/search output (`raw=<id>` in the header) | |
@@ -78,7 +79,8 @@ Use `--` before the command when it has its own flags that could clash (`ordo ru
   warnings, tokens and `raw_id`.
 - **Large input is windowed** to `--budget` tokens (default 6000) around error lines; the cut is marked in the text.
 - **`compact` is deterministic by default**: it is built only from what the session recorded: `dead-end`,
-  `note`, the last result of each test, build or lint command from the last `ORDO_LEDGER_HOURS`, and the
+  `note` (minus what `ordo forget` retracted), the exit code of each test, build or lint command from the
+  last `ORDO_LEDGER_HOURS` (never the model's summary), and the
   modified files from `git status`. A file is `PASS` or `FAIL` only if the last test run started after its
   last change; otherwise it is `UNTESTED`. `--neural` asks the model instead, falling back
   to the deterministic ledger if the output fails the schema (the published Ordo 3B is not reliable
@@ -122,7 +124,7 @@ own `/v1` endpoint ignores it, so with Ollama keep the default native backend.
 
 `ordo mcp` serves the same tools over MCP (stdio), so MCP-capable coding agents call them natively
 (`ordo_run`, `ordo_filter`, `ordo_slice`, `ordo_search`, `ordo_show`, `ordo_dead_end`, `ordo_note`,
-`ordo_compact`, `ordo_stats`) and get structured results. Install the extra: `pip install "ordo[mcp] @ git+https://github.com/devlucascfarias/ordo.git"`.
+`ordo_forget`, `ordo_compact`, `ordo_stats`) and get structured results. Install the extra: `pip install "ordo[mcp] @ git+https://github.com/devlucascfarias/ordo.git"`.
 
 Register it in your agent (command `ordo`, args `["mcp"]`; add `--no-run` for read-only tools):
 

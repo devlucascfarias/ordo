@@ -551,15 +551,14 @@ def deterministic_ledger(session: Session, goal: str) -> "MemoryCompact":
             if _TEST_CMD.search(ev["command"]):
                 last_test = ev
     for cmd, ev in last_by_cmd.items():
-        result = ev.get("status") or ("PASS" if ev["exit"] == 0 else "FAIL")
-        line = f"Last `{cmd}`: exit {ev['exit']} ({result})"
-        if ev.get("summary") and ev.get("route") == "model":
-            line += f": {ev['summary']}"
-        facts.append(line)
+        # only what the process reported: the model's summary can be wrong and must not become a "fact"
+        facts.append(f"Last `{cmd}`: exit {ev['exit']} ({'PASS' if ev['exit'] == 0 else 'FAIL'})")
+    forgotten = {(e.get("target"), e.get("text")) for e in session.events("forget")}
     seen: set[str] = set()
-    facts = [f for f in facts if not (f in seen or seen.add(f))]
+    facts = [f for f in facts if ("note", f) not in forgotten and not (f in seen or seen.add(f))]
     seen_d: set[str] = set()
-    dead = [d for d in dead if not (d.attempt in seen_d or seen_d.add(d.attempt))]
+    dead = [d for d in dead if ("dead_end", d.attempt) not in forgotten
+            and not (d.attempt in seen_d or seen_d.add(d.attempt))]
     test_started = None if last_test is None else last_test["ts"] - (last_test.get("cmd_seconds") or 0)
     test_result = None if last_test is None else ("PASS" if last_test["exit"] == 0 else "FAIL")
     files = []
@@ -616,6 +615,41 @@ def _strip_comments(text: str) -> str:
 def cmd_note(args) -> int:
     args.session_obj.append("note", text=args.text)
     _print(f"# ordo: note recorded in {args.session_obj.path.name}")
+    return 0
+
+
+def memory_items(session: Session) -> list[tuple[str, str, str]]:
+    """Active notes and dead ends as (id, kind, text): n1, n2... for notes, d1, d2... for dead ends."""
+    ledger = deterministic_ledger(session, "")
+    notes = [f for f in ledger.confirmed_facts if not f.startswith("Last `")]
+    items = [(f"n{i}", "note", f) for i, f in enumerate(notes, 1)]
+    items += [(f"d{i}", "dead_end", d.attempt) for i, d in enumerate(ledger.dead_ends_do_not_repeat, 1)]
+    return items
+
+
+def cmd_forget(args) -> int:
+    """Retract a note or a dead end that is wrong or obsolete (the record stays in the session file)."""
+    items = memory_items(args.session_obj)
+    if not args.item:
+        if not items:
+            _print("# ordo forget: no notes or dead ends recorded")
+            return 0
+        _print("# ordo forget: active notes (n) and dead ends (d); run `ordo forget <id>` to retract one")
+        _print("\n".join(f"{i}: {t}" for i, _, t in items))
+        return 0
+    key = args.item.strip()
+    hits = [it for it in items if it[0] == key.lower()] or \
+        [it for it in items if key.casefold() in it[2].casefold()]
+    if not hits:
+        _print(f"# ordo forget: nothing matches {key!r}; `ordo forget` lists the ids")
+        return 1
+    if len(hits) > 1 and not args.all:
+        _print(f"# ordo forget: {len(hits)} items match {key!r}; use an id, or --all to retract all of them")
+        _print("\n".join(f"{i}: {t}" for i, _, t in hits))
+        return 2
+    for _, kind, text in hits:
+        args.session_obj.append("forget", target=kind, text=text)
+        _print(f"# ordo: forgot {kind.replace('_', ' ')}: {text}")
     return 0
 
 
@@ -721,6 +755,7 @@ output is always kept and can be read back verbatim.
 | Read original lines | `ordo show <raw_id> --grep "<regex>"` or `--lines A-B` or `--tail N` |
 | Record a failed approach | `ordo dead-end "<attempt>" "<reason it failed>"` |
 | Record a confirmed fact | `ordo note "<fact, with path:line>"` |
+| Retract a wrong or obsolete note or dead end | `ordo forget` (lists ids), then `ordo forget <id>` |
 | Print the session state | `ordo compact -i "<current goal>"` |
 
 `-i` is the question the output must answer. Be specific: name the failing test, module or symptom
@@ -749,6 +784,7 @@ output is always kept and can be read back verbatim.
 1. Route long-running or verbose commands through `ordo run`; run short commands directly.
 2. When the summary is not enough, use `ordo show <raw_id>` instead of re-running the command.
 3. After an approach fails, record it with `ordo dead-end`; after verifying a fact, record it with `ordo note`.
+   When a recorded fact or dead end stops being true, retract it with `ordo forget`.
 4. Before a long task, after many steps, or when resuming work, read `ordo compact` and do not repeat
    any listed dead end.
 
@@ -756,7 +792,7 @@ output is always kept and can be read back verbatim.
 
 Agents with MCP support can register `ordo mcp` (command `ordo`, args `["mcp"]`; add `--no-run` for
 read-only tools). Tools: ordo_run, ordo_filter, ordo_slice, ordo_search, ordo_show, ordo_dead_end, ordo_note,
-ordo_compact, ordo_stats. They return the same structure as `--json`.
+ordo_forget, ordo_compact, ordo_stats. They return the same structure as `--json`.
 
 ### Configuration
 
@@ -984,6 +1020,7 @@ commands
 ├─ session memory
 │  ├─ dead-end  ATTEMPT REASON             record an approach that failed (do not repeat it)
 │  ├─ note      TEXT                       record a confirmed fact
+│  ├─ forget    [ID|TEXT]                  retract a wrong or obsolete note or dead end
 │  ├─ compact   -i GOAL                    state ledger: goal, facts, dead ends, file states
 │  └─ stats                                token savings for this session
 ├─ setup     [--yes]                       check the server, download the model, run a test call
@@ -1099,7 +1136,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     usages = {"run": "-i INTENT [--cmd-timeout S] -- CMD...", "filter": "-i INTENT [--mode MODE] [FILE]",
               "slice": "-i INTENT FILE", "search": "-i INTENT [-C N] PATTERN [PATH...]",
-              "dead-end": "ATTEMPT REASON", "note": "TEXT", "compact": "-i GOAL [--from FILE] [--neural]",
+              "dead-end": "ATTEMPT REASON", "note": "TEXT", "forget": "[ID|TEXT] [--all]", "compact": "-i GOAL [--from FILE] [--neural]",
               "stats": "", "mcp": "[--no-run]", "show": "[ID|last] [--lines A-B] [--grep RX] [-C N] [--tail N]", "guide": "[--raw]", "setup": "[--yes] [--no-test]"}
 
     def add(name: str, summary: str, examples: list[str], func) -> argparse.ArgumentParser:
@@ -1147,6 +1184,11 @@ def build_parser() -> argparse.ArgumentParser:
     s = add("note", "record a confirmed fact for the next compact",
             ['ordo note "pool exhausted when batch > 50 (src/pool.py:42)"'], cmd_note)
     s.add_argument("text", help="the fact, with paths and lines when possible")
+
+    s = add("forget", "retract a note or dead end that is wrong or obsolete (no argument: list them with ids)",
+            ["ordo forget", "ordo forget n3", 'ordo forget "Gemini quota"   # by text, if it matches one item'], cmd_forget)
+    s.add_argument("item", nargs="?", help="id from `ordo forget` (n1, d2...) or text contained in the item")
+    s.add_argument("--all", action="store_true", help="retract every item that matches the text")
 
     s = add("compact", "state ledger of the session: goal, facts, dead ends, file states (MEMORY_COMPACT)",
             ['ordo compact -i "stabilize the payment client"',

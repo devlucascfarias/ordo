@@ -34,7 +34,8 @@ INSTRUCTIONS = """Ordo condenses tool output into causal data (status, file, lin
   before acting on them.
 - Every run, filter and search returns a raw_id; ordo_show(raw_id, grep=..., lines=...) returns the exact
   original lines. Prefer it to re-running a command.
-- Record failed approaches with ordo_dead_end and verified facts with ordo_note. Read ordo_compact before a
+- Record failed approaches with ordo_dead_end and verified facts with ordo_note; retract obsolete ones
+  with ordo_forget. Read ordo_compact before a
   long task or when resuming work, and do not repeat any listed dead end."""
 
 
@@ -133,6 +134,12 @@ def build_server(allow_run: bool = True) -> MCPServer:
     @server.tool(description="Record a confirmed fact (with path:line when possible) for the session ledger.")
     async def ordo_note(text: str) -> dict[str, Any]:
         return await _acall(["note", text])
+
+    @server.tool(description=(
+        "Retract a note or dead end that is wrong or obsolete. Without `item`, list the active ones with ids "
+        "(n1, d2...). `item` is an id or text contained in exactly one item."))
+    async def ordo_forget(item: str | None = None) -> dict[str, Any]:
+        return await _acall(["forget"] + ([item] if item else []))
 
     @server.tool(description=(
         "Return the session state ledger: goal, confirmed facts, dead ends not to repeat, modified files with their "

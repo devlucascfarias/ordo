@@ -348,3 +348,33 @@ def test_distinct_trace_items_are_left_alone(model, capsys, tmp_path):
     log.write_text("\n".join(["a.py:1: KeyError", "b.py:2: ValueError"] * 30), encoding="utf-8")
     code, out = run(capsys, "filter", "-i", "why?", str(log))
     assert code == 0 and "repeated output" not in out
+
+
+def test_ledger_never_turns_the_model_summary_into_a_fact(tmp_path):
+    import json
+    import time
+
+    sess, *_ = _ledger_repo(tmp_path)
+    sess.path.write_text(json.dumps({"ts": time.time(), "kind": "run", "command": "mypy src", "exit": 1,
+                                     "status": "PASS", "route": "model",
+                                     "summary": "13 mypy errors in 13 files"}) + "\n", encoding="utf-8")
+    facts = cli.deterministic_ledger(sess, "goal").confirmed_facts
+    assert facts == ["Last `mypy src`: exit 1 (FAIL)"]  # exit code only; the model said PASS and invented counts
+
+
+def test_forget_lists_and_retracts_notes_and_dead_ends(capsys):
+    run(capsys, "note", "cache is keyed by item only")
+    run(capsys, "note", "quota resets at 13:00")
+    run(capsys, "dead-end", "Gemini before 13:00", "quota exhausted")
+    code, out = run(capsys, "forget")
+    assert code == 0 and "n1: cache is keyed by item only" in out and "d1: Gemini before 13:00" in out
+    code, out = run(capsys, "forget", "13:00")  # matches a note and a dead end: ambiguous
+    assert code == 2 and "use an id" in out
+    code, out = run(capsys, "forget", "d1")
+    assert code == 0 and "forgot dead end: Gemini before 13:00" in out
+    code, out = run(capsys, "forget", "quota resets")
+    assert code == 0 and "forgot note: quota resets at 13:00" in out
+    code, out = run(capsys, "compact", "-i", "goal")
+    assert "cache is keyed by item only" in out and "quota resets" not in out and "Gemini before" not in out
+    code, out = run(capsys, "forget", "nothing like this")
+    assert code == 1
