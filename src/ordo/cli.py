@@ -794,9 +794,62 @@ COMMON_HELP = ("common options: --json --model --host --base-url --budget --time
                "--no-fallback")
 
 
+_SECTIONS = ("usage:", "commands", "output", "exit codes", "environment", "examples")
+
+
+def _styled_top_help():
+    """TOP_HELP with colors for a person at a terminal; same text and layout as the plain version."""
+    from rich.text import Text
+
+    out = Text()
+    for i, line in enumerate(TOP_HELP.rstrip("\n").split("\n")):
+        t = Text(line)
+        tree = re.match(r"^([│├└─ ]+)([a-z-]+)(.*)$", line)
+        if i == 0:
+            t.stylize("bold cyan", 0, 4)
+            t.stylize("dim", line.index(" - ") if " - " in line else len(line))
+        elif line.startswith(_SECTIONS):
+            t.stylize("bold yellow", 0, len(line) if not line.startswith("usage:") else 6)
+        elif tree:
+            t.stylize("dim", 0, tree.end(1))
+            parts = re.split(r"(\s{2,})", tree.group(3))
+            if len(parts) < 3:  # group label ("filter output")
+                t.stylize("bold", tree.start(2))
+            else:
+                t.stylize("bold cyan", tree.start(2), tree.end(2))
+                args_end = tree.start(3) + len("".join(parts[:-2]))
+                t.stylize("green", tree.start(3), args_end)
+        elif line.startswith("  ") and re.match(r"\s+(ordo|pytest)\b", line):
+            t.stylize("green", 2)
+        else:
+            t.highlight_regex(r"\b[A-Z][A-Z_]{2,}\b", "cyan")  # environment variables
+            t.highlight_regex(r"'[^']+'|--[a-z][a-z-]*|raw=<id>", "cyan")
+        if line.startswith("'ordo <command> -h'"):
+            t.stylize("dim")
+        out.append_text(t)
+        out.append("\n")
+    return out
+
+
+def print_top_help() -> None:
+    """Plain text when piped, redirected or captured (agents read it); colored at an interactive terminal."""
+    if _SINK.get() is None and sys.stdout.isatty():
+        from rich.console import Console
+
+        Console(highlight=False, soft_wrap=True).print(_styled_top_help(), end="")
+        return
+    _print(TOP_HELP)
+
+
 class _Parser(argparse.ArgumentParser):
     def format_help(self) -> str:
         return TOP_HELP if self.prog == "ordo" else super().format_help()
+
+    def print_help(self, file=None) -> None:
+        if self.prog == "ordo" and file is None:
+            print_top_help()
+            return
+        super().print_help(file)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -934,7 +987,7 @@ def _run(argv: list[str] | None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if not getattr(args, "func", None):  # bare `ordo`: show the help, without an error
-        _print(TOP_HELP)
+        print_top_help()
         return 0
     args.session_obj = Session.open(args.session)
     return int(args.func(args) or 0)

@@ -260,3 +260,18 @@ def test_guide_is_plain_markdown_when_piped_and_rendered_at_a_terminal(monkeypat
     tty2 = _TTY()
     monkeypatch.setattr(sys, "stdout", tty2)
     assert cli.main(["guide", "--raw"]) == 0 and tty2.getvalue() == cli.GUIDE.rstrip("\n") + "\n"
+
+
+def test_top_help_is_plain_when_piped_and_colored_at_a_terminal(monkeypatch, capsys):
+    code, out = run(capsys)  # bare `ordo`, not a TTY: plain text, no escape codes
+    assert code == 0 and out == cli.TOP_HELP.rstrip("\n") + "\n" and "\x1b[" not in out
+    for argv in ([], ["--help"]):
+        tty = _TTY()
+        monkeypatch.setattr(sys, "stdout", tty)
+        try:
+            code = cli.main(argv)
+        except SystemExit as e:  # argparse exits after --help
+            code = e.code
+        colored = tty.getvalue()
+        assert code == 0 and "\x1b[" in colored
+        assert re.sub(r"\x1b\[[0-9;]*m", "", colored).rstrip() == cli.TOP_HELP.rstrip()
