@@ -105,3 +105,24 @@ def test_unreachable_server_and_json_report(ollama, capsys):
     code, out = _run(capsys, "--host", "http://127.0.0.1:9", "--json")
     rep = json.loads(out)
     assert code == 1 and rep["ok"] is False and rep["backend"] == "ollama" and rep["hints"]
+
+
+def test_colors_only_at_an_interactive_terminal(ollama, capsys, monkeypatch):
+    import io
+    import re
+    import sys
+
+    srv = ollama(["ordo:3b"])
+    code, plain = _run(capsys, "--host", srv.url)  # captured: no escape codes
+    assert code == 0 and "\x1b[" not in plain
+
+    class TTY(io.StringIO):
+        def isatty(self):
+            return True
+
+    tty = TTY()
+    monkeypatch.setattr(sys, "stdout", tty)
+    assert cli.main(["setup", "--host", srv.url]) == 0
+    colored = tty.getvalue()
+    strip = lambda t: re.sub(r"test call: [\d.]+s", "test call: Xs", re.sub(r"\x1b\[[0-9;]*m", "", t))  # noqa: E731
+    assert "\x1b[" in colored and strip(colored) == strip(plain)

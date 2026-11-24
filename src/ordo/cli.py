@@ -772,11 +772,24 @@ def cmd_setup(args) -> int:
 
     report: dict = {"backend": "openai" if args.base_url else "ollama", "server": None, "model": None, "test": None}
     lines: list[str] = []
+    human = _SINK.get() is None and sys.stdout.isatty()  # colors only for a person at a terminal
+
+    def say(text: str, style: str = "", tag_style: str = "") -> None:
+        if not human:
+            _print(text)
+            return
+        from rich.console import Console
+        from rich.text import Text
+
+        t = Text(text, style=style)
+        if tag_style and text.startswith("["):
+            t.stylize(tag_style, 0, text.index("]") + 1)
+        Console(highlight=False, soft_wrap=True).print(t)
 
     def step(ok: bool | None, text: str) -> None:
         lines.append(f"[{'ok' if ok else 'skip' if ok is None else 'fail'}] {text}")
         if not args.json:
-            _print(lines[-1])
+            say(lines[-1], tag_style={True: "bold green", False: "bold red", None: "yellow"}[ok])
 
     def done(code: int, *hints: str) -> int:
         report["ok"] = code == 0
@@ -785,7 +798,7 @@ def cmd_setup(args) -> int:
             _print(json.dumps(report, ensure_ascii=False, indent=1))
         else:
             for h in hints:
-                _print(f"  {h}")
+                say(f"  {h}", style="dim")
         return code
 
     name = None
@@ -824,7 +837,7 @@ def cmd_setup(args) -> int:
                 step(False, "model: Ordo is not installed")
                 return done(1, "run `ordo setup --yes` to download it, or `ollama pull " + PULL_NAME + "`")
             if not args.json:
-                _print(f"downloading {PULL_NAME} ...")
+                say(f"downloading {PULL_NAME} ...", style="cyan")
             try:
                 pull_model(host, PULL_NAME, progress=None if args.json else _pull_progress())
             except Exception as e:  # noqa: BLE001
@@ -840,7 +853,7 @@ def cmd_setup(args) -> int:
         step(None, "test call skipped (--no-test)")
         return done(0, "next: `ordo guide >> AGENTS.md`, or register `ordo mcp` in your agent")
     if not args.json:
-        _print("running a test call (the first one loads the model and can take a minute) ...")
+        say("running a test call (the first one loads the model and can take a minute) ...", style="cyan")
     t0 = time.time()
     try:
         res = call_ordo(GcMode.TOOL_OUTPUT, "Which test fails and why?", SETUP_LOG, model=name, host=args.host,
