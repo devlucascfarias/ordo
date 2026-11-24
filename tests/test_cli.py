@@ -404,3 +404,39 @@ def test_memory_reads_records_written_before_ids(capsys, ordo_home):
     mem = _memory(capsys)
     assert mem["legacy fact"]["id"].startswith("n") and mem["legacy attempt"]["reason"] == "legacy reason"
     assert _memory(capsys)["legacy fact"]["id"] == mem["legacy fact"]["id"]  # derived ids are stable too
+
+
+def test_tool_name_strips_wrappers_and_keeps_subcommands():
+    cases = {"python -m pytest -q": "pytest", "npx tsc --noEmit": "tsc", "npm run build": "npm run build",
+             "npm test": "npm test", "go test ./...": "go test", "cargo test --lib": "cargo test",
+             "uv run ruff check src": "ruff", "C:/tools/mvn.cmd -q test": "mvn test", "./gradlew build": "gradlew build"}
+    for cmd, name in cases.items():
+        assert cli.tool_name({"kind": "run", "command": cmd}) == name, cmd
+    assert cli.tool_name({"kind": "filter"}) == "ordo filter"
+
+
+def test_savings_aggregates_all_projects_plain_json_and_terminal(ordo_home, capsys, monkeypatch):
+    import io
+
+    from ordo.session import Session
+
+    for name, events in {"api": [("run", "python -m pytest -q", 4000, 60, "model"),
+                                 ("run", "python -m pytest -q", 30, 30, "bypass")],
+                         "web": [("run", "npx tsc --noEmit", 2000, 100, "model"), ("filter", None, 500, 50, "model")]}.items():
+        sess = Session(path=ordo_home / "home" / "sessions" / f"{name}-0123456789.jsonl", root=ordo_home)
+        for kind, cmd, raw, out, route in events:
+            sess.append(kind, **({"command": cmd} if cmd else {}), raw_tokens=raw, out_tokens=out, route=route, seconds=2)
+    code, out = run(capsys, "savings", "--json")
+    rep = json.loads(out)
+    assert rep["total"]["saved"] == 6290 and rep["total"]["calls"] == 4 and rep["total"]["filtered"] == 3
+    assert list(rep["by_tool"]) == ["pytest", "tsc", "ordo filter"] and set(rep["by_project"]) == {"api", "web"}
+    code, out = run(capsys, "savings")
+    assert code == 0 and out.startswith("Ordo kept 6,290 tokens") and "\x1b[" not in out and "pytest" in out
+
+    class TTY(io.StringIO):
+        def isatty(self):
+            return True
+
+    tty = TTY()
+    monkeypatch.setattr(sys, "stdout", tty)
+    assert cli.main(["savings"]) == 0 and "\x1b[" in tty.getvalue() and "6,290" in tty.getvalue()

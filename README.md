@@ -58,6 +58,7 @@ back to any installed `hf.co/devlucascfarias/ordo-3b` tag automatically. Manual 
 | `ordo forget ID\|TEXT` | retracts a wrong or obsolete note or dead end | |
 | `ordo compact -i GOAL` | writes the session's state ledger (goal, facts, dead ends, modified files) | `MEMORY_COMPACT` |
 | `ordo stats [--json]` | token savings telemetry for the session | |
+| `ordo savings [--top N] [--json]` | tokens kept out of the agent's context across all projects, per tool (pytest, tsc, cargo test...) and per project | |
 | `ordo show [ID] [--grep RX] [--lines A-B]` | exact lines of a saved run/filter/search output (`raw=<id>` in the header) | |
 | `ordo setup [--yes] [--no-test]` | checks the model server, downloads the model if missing, runs a test call | |
 | `ordo guide` | instructions for coding agents, to paste into `AGENTS.md` | |

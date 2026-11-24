@@ -735,6 +735,105 @@ def cmd_forget(args) -> int:
     return 0
 
 
+_WRAPPERS = re.compile(r"^(python3?|py)(\.exe)?\s+-m\s+|^(npx|bunx|uvx)\s+|^(uv|poetry|pipenv|pdm|hatch)\s+run\s+|"
+                       r"^(pnpm|yarn)\s+exec\s+|^dotnet\s+tool\s+run\s+")
+_TWO_WORD = {"npm", "yarn", "pnpm", "bun", "go", "cargo", "dotnet", "mvn", "gradle", "gradlew", "mix", "bundle",
+             "composer", "make", "deno"}
+
+
+def tool_name(event: dict) -> str:
+    """Which tool produced the output: `python -m pytest -q` -> pytest, `npm run build` -> npm run build."""
+    if event["kind"] != "run":
+        return {"filter": "ordo filter", "slice": "ordo slice", "search": "ordo search"}.get(event["kind"], event["kind"])
+    words = _WRAPPERS.sub("", event.get("command", "").strip()).split()
+    if not words:
+        return "(unknown)"
+    first = Path(words[0]).name.removesuffix(".exe").removesuffix(".cmd")
+    if first in _TWO_WORD and len(words) > 1:
+        rest = [w for w in words[1:3] if not w.startswith("-")]
+        if first in ("npm", "yarn", "pnpm", "bun") and rest[:1] == ["run"]:
+            return " ".join([first] + rest[:2])
+        return " ".join([first] + rest[:1])
+    return first
+
+
+def savings_report(home: Path) -> dict:
+    """Token savings over every recorded session: totals, per tool and per project."""
+    tools: dict[str, dict] = {}
+    projects: dict[str, dict] = {}
+    total = {"calls": 0, "raw": 0, "sent": 0, "filtered": 0, "model_seconds": 0.0}
+    first_ts = None
+    for path in sorted((home / "sessions").glob("*.jsonl")):
+        project = re.sub(r"-[0-9a-f]{10}$", "", path.stem)
+        for ev in Session(path=path, root=Path(".")).events():
+            if ev["kind"] not in ("run", "filter", "slice", "search") or "raw_tokens" not in ev:
+                continue
+            raw, sent = int(ev.get("raw_tokens") or 0), int(ev.get("out_tokens") or 0)
+            filtered = ev.get("route") == "model"
+            first_ts = min(first_ts or ev["ts"], ev["ts"])
+            for row in (tools.setdefault(tool_name(ev), {"calls": 0, "raw": 0, "sent": 0, "filtered": 0}),
+                        projects.setdefault(project, {"calls": 0, "raw": 0, "sent": 0, "filtered": 0}), total):
+                row["calls"] += 1
+                row["raw"] += raw
+                row["sent"] += sent
+                row["filtered"] += filtered
+            total["model_seconds"] += float(ev.get("seconds") or 0) if filtered else 0.0
+    for row in [*tools.values(), *projects.values(), total]:
+        row["saved"] = row["raw"] - row["sent"]
+        row["saved_pct"] = round(100 * row["saved"] / row["raw"], 1) if row["raw"] else 0.0
+    order = lambda d: dict(sorted(d.items(), key=lambda kv: -kv[1]["saved"]))  # noqa: E731
+    return {"since": time.strftime("%Y-%m-%d", time.localtime(first_ts)) if first_ts else None,
+            "total": total, "by_tool": order(tools), "by_project": order(projects)}
+
+
+def cmd_savings(args) -> int:
+    """Tokens Ordo kept out of the agent's context, across all projects, per tool and per project."""
+    from .session import ordo_home
+
+    rep = savings_report(ordo_home())
+    if args.json:
+        _print(json.dumps(rep, ensure_ascii=False, indent=1))
+        return 0
+    t = rep["total"]
+    if not t["calls"]:
+        _print("# ordo savings: no tool output recorded yet (run `ordo run -i ... -- <command>` first)")
+        return 0
+    head = (f"Ordo kept {t['saved']:,} tokens out of your agent's context ({t['saved_pct']:.0f}% of "
+            f"{t['raw']:,}) across {t['calls']} tool calls in {len(rep['by_project'])} project(s) since {rep['since']}.")
+    note = (f"{t['filtered']} call(s) were condensed by the model ({t['model_seconds'] / 60:.1f} min of model "
+            "time); the rest were short and passed through. Token counts are estimates (~3.5 characters per token).")
+    k = args.top
+    sections = [("by tool", list(rep["by_tool"].items())[:k]), ("by project", list(rep["by_project"].items())[:k])]
+    if _SINK.get() is None and sys.stdout.isatty():
+        from rich.console import Console
+        from rich.table import Table
+        from rich.text import Text
+
+        con = Console(highlight=False)
+        con.print(Text(head, style="bold"))
+        for title, rows in sections:
+            tb = Table(title=title, title_justify="left", title_style="bold yellow", box=None, padding=(0, 2))
+            for col in (title.split()[-1], "calls", "raw tokens", "sent", "saved"):
+                tb.add_column(col, justify="left" if col in ("tool", "project") else "right",
+                              style="cyan" if col in ("tool", "project") else ("green" if col == "saved" else ""))
+            for name, r in rows:
+                tb.add_row(name, str(r["calls"]), f"{r['raw']:,}", f"{r['sent']:,}",
+                           f"{r['saved']:,} ({r['saved_pct']:.0f}%)")
+            con.print(tb)
+        con.print(Text(note, style="dim"))
+        return 0
+    lines = [head, ""]
+    for title, rows in sections:
+        w = max([len(n) for n, _ in rows] + [len(title.split()[-1])])
+        lines.append(f"{title}:")
+        lines.append(f"  {title.split()[-1]:<{w}}  {'calls':>6}  {'raw tokens':>11}  {'sent':>9}  saved")
+        lines += [f"  {n:<{w}}  {r['calls']:>6}  {r['raw']:>11,}  {r['sent']:>9,}  {r['saved']:,} ({r['saved_pct']:.0f}%)"
+                  for n, r in rows]
+        lines.append("")
+    _print("\n".join(lines + [note]))
+    return 0
+
+
 def cmd_stats(args) -> int:
     rows: dict[str, dict] = {}
     for ev in args.session_obj.events():
@@ -1110,7 +1209,8 @@ commands
 │  ├─ edit      ID [TEXT] [--reason R]     rewrite a note or dead end, keeping its id
 │  ├─ forget    ID|TEXT                    retract a wrong or obsolete note or dead end
 │  ├─ compact   -i GOAL                    state ledger: goal, facts, dead ends, file states
-│  └─ stats                                token savings for this session
+│  ├─ stats                                token savings for this session
+│  └─ savings   [--top N]                  tokens saved across all projects, per tool
 ├─ setup     [--yes]                       check the server, download the model, run a test call
 ├─ guide                                   instructions for any coding agent (AGENTS.md)
 └─ mcp       [--no-run]                    serve these tools over MCP (stdio) for coding agents
@@ -1224,7 +1324,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     usages = {"run": "-i INTENT [--cmd-timeout S] -- CMD...", "filter": "-i INTENT [--mode MODE] [FILE]",
               "slice": "-i INTENT FILE", "search": "-i INTENT [-C N] PATTERN [PATH...]",
-              "dead-end": "ATTEMPT REASON", "note": "TEXT", "forget": "ID|TEXT [--all]", "memory": "[--grep RX] [--json]", "edit": "ID [TEXT] [--reason R]", "compact": "-i GOAL [--from FILE] [--neural]",
+              "dead-end": "ATTEMPT REASON", "note": "TEXT", "forget": "ID|TEXT [--all]", "memory": "[--grep RX] [--json]", "savings": "[--top N] [--json]", "edit": "ID [TEXT] [--reason R]", "compact": "-i GOAL [--from FILE] [--neural]",
               "stats": "", "mcp": "[--no-run]", "show": "[ID|last] [--lines A-B] [--grep RX] [-C N] [--tail N]", "guide": "[--raw]", "setup": "[--yes] [--no-test]"}
 
     def add(name: str, summary: str, examples: list[str], func) -> argparse.ArgumentParser:
@@ -1298,6 +1398,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="ask the model instead of building the ledger from session records (experimental)")
 
     s = add("stats", "token savings telemetry for this session", ["ordo stats", "ordo stats --json"], cmd_stats)
+
+    s = add("savings", "tokens Ordo kept out of the agent's context, across all projects, per tool and project",
+            ["ordo savings", "ordo savings --top 5", "ordo savings --json"], cmd_savings)
+    s.add_argument("--top", type=int, default=10, help="rows per table (default 10)")
 
     s = add("show", "print exact lines of a saved run/filter/search output (the original is never lost)",
             ["ordo show last --grep KeyError", "ordo show 20261123-221502-ab12 --lines 120-160", "ordo show --tail 30"],
