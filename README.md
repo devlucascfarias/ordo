@@ -60,6 +60,7 @@ command again to update.
 | `ordo compact -i GOAL` | writes the session's state ledger (goal, facts, dead ends, modified files) | `MEMORY_COMPACT` |
 | `ordo stats [--json]` | token savings telemetry for the session | |
 | `ordo savings [--top N] [--json]` | tokens kept out of the agent's context across all projects, per tool (pytest, tsc, cargo test...) and per project | |
+| `ordo dashboard [--no-open]` | writes a self-contained HTML page with the tokens saved per project and opens it in the browser (no server; nothing leaves the machine) | |
 | `ordo prune [--missing] [--older-than DAYS] [--yes]` | lists every project with recorded memory; removes those whose folder is gone or that are inactive (asks first) | |
 | `ordo show [ID] [--grep RX] [--lines A-B]` | exact lines of a saved run/filter/search output (`raw=<id>` in the header) | |
 | `ordo setup [--yes] [--no-test]` | checks the model server, downloads the model if missing, runs a test call | |

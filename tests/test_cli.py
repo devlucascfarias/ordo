@@ -601,3 +601,36 @@ def test_cmd_exe_command_line_keeps_inner_quotes(tmp_path):
     target, shell = cli._resolve_command(cmd)
     code, out, _ = cli._execute(target, shell, 60, str(tmp_path))
     assert code == 0 and out.decode().strip() == "ok"
+
+
+def test_dashboard_writes_a_self_contained_page_and_opens_it(ordo_home, capsys, monkeypatch, tmp_path):
+    import webbrowser
+    from pathlib import Path as P
+
+    from ordo.session import Session
+
+    fake_home = tmp_path / "someuser"
+    fake_home.mkdir()
+    monkeypatch.setattr(P, "home", classmethod(lambda cls: fake_home))
+    sessions = ordo_home / "home" / "sessions"
+    api = Session(path=sessions / "api&co-0123456789.jsonl", root=ordo_home)
+    api.append("run", command="python -m pytest -q", raw_tokens=4000, out_tokens=60, route="model", seconds=2)
+    api.append("run", command="python -m pytest -q", raw_tokens=30, out_tokens=30, route="bypass")
+    home_s = Session(path=sessions / "someuser-0123456789.jsonl", root=fake_home)  # ran outside a repository
+    home_s.append("filter", raw_tokens=500, out_tokens=50, route="model", seconds=1)
+    opened = []
+    monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
+    code, out = run(capsys, "dashboard")
+    page = (ordo_home / "home" / "dashboard.html").read_text(encoding="utf-8")
+    assert code == 0 and "dashboard.html" in out and opened and opened[0].startswith("file:")
+    assert "<script" not in page and "http" not in page.replace("http-equiv", "")  # no external assets
+    assert "api&amp;co" in page and "someuser" not in page and ">~<" in page  # escaped; home folder hidden
+    assert "4.4k" in page and "of 4,530" in page and "3,940" in page and "1 short enough to pass through" in page
+    opened.clear()
+    assert run(capsys, "dashboard", "--no-open")[0] == 0 and not opened
+
+
+def test_dashboard_with_no_data_explains_how_to_start(ordo_home, capsys):
+    code, _ = run(capsys, "dashboard", "--no-open")
+    page = (ordo_home / "home" / "dashboard.html").read_text(encoding="utf-8")
+    assert code == 0 and "No tool output recorded yet" in page

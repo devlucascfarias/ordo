@@ -849,15 +849,26 @@ def tool_name(event: dict) -> str:
     return first
 
 
+def _display_project(sess: Session) -> str:
+    """Folder name of the project; `~` when the session ran in the home folder (its name is the username)."""
+    root = sess.root_recorded()
+    try:
+        at_home = Path(root).resolve() == Path.home().resolve() if root else sess.project == Path.home().name
+    except OSError:
+        at_home = False
+    return "~" if at_home else sess.project
+
+
 def savings_report(home: Path) -> dict:
     """Token savings over every recorded session: totals, per tool and per project."""
     tools: dict[str, dict] = {}
     projects: dict[str, dict] = {}
-    total = {"calls": 0, "raw": 0, "sent": 0, "filtered": 0, "model_seconds": 0.0}
+    total = {"calls": 0, "raw": 0, "sent": 0, "filtered": 0, "model_seconds": 0.0, "bypass": 0, "fallback": 0}
     first_ts = None
     for path in sorted((home / "sessions").glob("*.jsonl")):
-        project = Session(path=path, root=Path(".")).project
-        for ev in Session(path=path, root=Path(".")).events():
+        sess = Session(path=path, root=Path("."))
+        project = _display_project(sess)
+        for ev in sess.events():
             if ev["kind"] not in ("run", "filter", "slice", "search") or "raw_tokens" not in ev:
                 continue
             raw, sent = int(ev.get("raw_tokens") or 0), int(ev.get("out_tokens") or 0)
@@ -870,12 +881,34 @@ def savings_report(home: Path) -> dict:
                 row["sent"] += sent
                 row["filtered"] += filtered
             total["model_seconds"] += float(ev.get("seconds") or 0) if filtered else 0.0
+            if ev.get("route") in ("bypass", "fallback"):
+                total[ev["route"]] += 1
+            projects[project]["last"] = max(projects[project].get("last", 0), ev["ts"])
     for row in [*tools.values(), *projects.values(), total]:
         row["saved"] = row["raw"] - row["sent"]
         row["saved_pct"] = round(100 * row["saved"] / row["raw"], 1) if row["raw"] else 0.0
+    for row in projects.values():
+        row["last"] = time.strftime("%Y-%m-%d %H:%M", time.localtime(row["last"]))
     order = lambda d: dict(sorted(d.items(), key=lambda kv: -kv[1]["saved"]))  # noqa: E731
     return {"since": time.strftime("%Y-%m-%d", time.localtime(first_ts)) if first_ts else None,
             "total": total, "by_tool": order(tools), "by_project": order(projects)}
+
+
+def cmd_dashboard(args) -> int:
+    """Write a self-contained HTML page with the savings across projects and open it in the browser."""
+    import webbrowser
+
+    from .dashboard import render
+    from .session import ordo_home
+
+    home = ordo_home()
+    path = home / "dashboard.html"
+    home.mkdir(parents=True, exist_ok=True)
+    path.write_text(render(savings_report(home)), encoding="utf-8")
+    _print(f"# ordo dashboard: {path}")
+    if not args.no_open and not webbrowser.open(path.resolve().as_uri()):
+        _print("# ordo dashboard: no browser available here; open the file above in one")
+    return 0
 
 
 def cmd_savings(args) -> int:
@@ -1370,6 +1403,7 @@ commands
 │  ├─ compact   -i GOAL                    state ledger: goal, facts, dead ends, file states
 │  ├─ stats                                token savings for this session
 │  ├─ savings   [--top N]                  tokens saved across all projects, per tool
+│  ├─ dashboard [--no-open]                page with the savings per project, in the browser
 │  └─ prune     [--missing|--older-than D] memory of all projects; remove stale ones
 ├─ setup     [--yes]                       check the server, download the model, run a test call
 ├─ guide                                   instructions for any coding agent (AGENTS.md)
@@ -1452,7 +1486,7 @@ def print_top_help() -> None:
 
 
 # words people try that are not commands, and what they probably meant
-_ALIASES = {"usage": ["savings", "stats"], "status": ["stats"], "help": ["guide"], "install": ["setup"],
+_ALIASES = {"usage": ["savings", "stats"], "home": ["dashboard"], "ui": ["dashboard"], "status": ["stats"], "help": ["guide"], "install": ["setup"],
             "init": ["setup"], "doctor": ["setup"], "check": ["setup"], "list": ["memory"], "ls": ["memory"],
             "notes": ["memory"], "delete": ["forget"], "remove": ["forget"], "rm": ["forget"], "update": ["edit"],
             "log": ["show"], "logs": ["show"], "cat": ["show"], "clean": ["prune"], "test": ["run"],
@@ -1543,7 +1577,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     usages = {"run": "-i INTENT [--cmd-timeout S] -- CMD...", "filter": "-i INTENT [--mode MODE] [FILE]",
               "slice": "-i INTENT FILE", "search": "-i INTENT [-C N] PATTERN [PATH...]",
-              "dead-end": "ATTEMPT REASON", "note": "TEXT", "forget": "ID|TEXT [--all]", "memory": "[--grep RX] [--json]", "savings": "[--top N] [--json]", "prune": "[--missing] [--older-than DAYS] [--yes]", "edit": "ID [TEXT] [--reason R]", "compact": "-i GOAL [--from FILE] [--neural]",
+              "dead-end": "ATTEMPT REASON", "note": "TEXT", "forget": "ID|TEXT [--all]", "memory": "[--grep RX] [--json]", "savings": "[--top N] [--json]", "dashboard": "[--no-open]", "prune": "[--missing] [--older-than DAYS] [--yes]", "edit": "ID [TEXT] [--reason R]", "compact": "-i GOAL [--from FILE] [--neural]",
               "stats": "", "mcp": "[--no-run]", "show": "[ID|last] [--lines A-B] [--grep RX] [-C N] [--tail N]", "guide": "[--raw]", "setup": "[--yes] [--no-test]"}
 
     def add(name: str, summary: str, examples: list[str], func) -> argparse.ArgumentParser:
@@ -1621,6 +1655,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = add("savings", "tokens Ordo kept out of the agent's context, across all projects, per tool and project",
             ["ordo savings", "ordo savings --top 5", "ordo savings --json"], cmd_savings)
     s.add_argument("--top", type=int, default=10, help="rows per table (default 10)")
+
+    s = add("dashboard", "write a self-contained HTML page with the token savings per project and open it",
+            ["ordo dashboard", "ordo dashboard --no-open"], cmd_dashboard)
+    s.add_argument("--no-open", action="store_true", help="only write the file (for SSH or WSL)")
 
     s = add("prune", "list projects with recorded memory; remove those whose folder is gone or that are inactive",
             ["ordo prune", "ordo prune --missing", "ordo prune --older-than 90 --yes"], cmd_prune)
