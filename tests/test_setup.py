@@ -12,7 +12,7 @@ REPLY = "status: FAIL\nsummary: 'KeyError: ''BRL'' in src/fx.py:12'\ncausal_trac
 
 class FakeOllama:
     def __init__(self, models):
-        self.models, self.pulled = list(models), []
+        self.models, self.pulled, self.chats = list(models), [], []
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -50,6 +50,7 @@ class FakeOllama:
                     fake.models.append(body["model"] + ":latest")
                     return
                 if self.path == "/api/chat":
+                    fake.chats.append(body["model"])
                     return self._json({"message": {"content": REPLY}, "prompt_eval_count": 200, "eval_count": 30,
                                        "total_duration": 1e9, "done_reason": "stop"})
                 self.send_response(404)
@@ -126,3 +127,29 @@ def test_colors_only_at_an_interactive_terminal(ollama, capsys, monkeypatch):
     colored = tty.getvalue()
     strip = lambda t: re.sub(r"test call: [\d.]+s", "test call: Xs", re.sub(r"\x1b\[[0-9;]*m", "", t))  # noqa: E731
     assert "\x1b[" in colored and strip(colored) == strip(plain)
+
+
+HF = "hf.co/devlucascfarias/ordo-3b:latest"
+
+
+def test_hugging_face_pull_is_preferred_over_an_older_local_build(ollama, capsys, monkeypatch):
+    monkeypatch.delenv("ORDO_MODEL", raising=False)
+    srv = ollama(["ordo:3b", HF])
+    code, out = _run(capsys, "--host", srv.url)
+    assert code == 0 and f"[ok] model: {HF}" in out and srv.chats == [HF]
+
+
+def test_a_named_model_is_used_as_is(ollama, capsys, monkeypatch):
+    monkeypatch.setenv("ORDO_MODEL", "ordo:3b")
+    srv = ollama(["ordo:3b", HF])
+    code, out = _run(capsys, "--host", srv.url)
+    assert code == 0 and "[ok] model: ordo:3b" in out and srv.chats == ["ordo:3b"]
+
+
+def test_client_default_resolves_to_the_preferred_install(ollama, monkeypatch):
+    from ordo import client
+    monkeypatch.delenv("ORDO_MODEL", raising=False)
+    monkeypatch.setattr(client, "_resolved", {})
+    srv = ollama(["ordo:3b", HF])
+    client.call_ollama_ordo("TOOL_OUTPUT", "why?", "log", host=srv.url)
+    assert srv.chats == [HF]

@@ -1211,6 +1211,8 @@ def cmd_setup(args) -> int:
                          normalize_host, pull_model, served_models)
 
     report: dict = {"backend": "openai" if args.base_url else "ollama", "server": None, "model": None, "test": None}
+    # a model the user named (--model or ORDO_MODEL) is used as is; otherwise the preference order picks one
+    named = args.model if (args.model != DEFAULT_MODEL or os.environ.get("ORDO_MODEL")) else None
     lines: list[str] = []
     human = _SINK.get() is None and sys.stdout.isatty()  # colors only for a person at a terminal
 
@@ -1249,15 +1251,15 @@ def cmd_setup(args) -> int:
             names = served_models(base)
         except Exception as e:  # noqa: BLE001
             step(False, f"server: cannot reach {base} ({type(e).__name__})")
-            return done(1, "start your server, e.g.: llama-server -m ordo-3b.gguf -c 16384 --port 8080",
-                        f"the GGUF is in {HF_URL} (ordo-3b.gguf)")
+            return done(1, "start your server, e.g.: llama-server -m ordo-3b-Q4_K_M.gguf -c 16384 --port 8080",
+                        f"the GGUF is in {HF_URL} (ordo-3b-Q4_K_M.gguf)")
         step(True, f"server: {base} (OpenAI-compatible, {len(names)} model(s) listed)")
-        name = args.model if args.model in names else match_ordo(names) or (names[0] if len(names) == 1 else None)
+        name = named if named in names else match_ordo(names) or (names[0] if len(names) == 1 else None)
         if not names:
             name = args.model
         if name is None:
             step(False, f"model: no Ordo model among {', '.join(names[:6])}")
-            return done(1, f"load ordo-3b.gguf from {HF_URL}, or set ORDO_MODEL to the served name")
+            return done(1, f"load ordo-3b-Q4_K_M.gguf from {HF_URL}, or set ORDO_MODEL to the served name")
     else:
         host = normalize_host(args.host)
         report["server"] = host
@@ -1270,9 +1272,9 @@ def cmd_setup(args) -> int:
             return done(1, "install Ollama from https://ollama.com/download",
                         "or use another server: set ORDO_BASE_URL (llama.cpp, LM Studio, vLLM)")
         step(True, f"server: Ollama at {host} ({len(names)} model(s) installed)")
-        name = args.model if args.model in names else find_ordo_model(host)
+        name = named if named in names else find_ordo_model(host)
         if name is None:
-            question = f"Download {PULL_NAME} (about 6.2 GB) with Ollama?"
+            question = f"Download {PULL_NAME} (about 1.9 GB) with Ollama?"
             if not (args.yes or _confirm(question)):
                 step(False, "model: Ordo is not installed")
                 return done(1, "run `ordo setup --yes` to download it, or `ollama pull " + PULL_NAME + "`")
@@ -1385,7 +1387,7 @@ exit codes
   3: model failed with --no-fallback   search: 1 when nothing matches
 
 environment
-  ORDO_MODEL (ordo:3b)   OLLAMA_HOST (127.0.0.1:11434)   ORDO_MAX_INPUT_TOKENS (6000)
+  ORDO_MODEL (installed Ordo)   OLLAMA_HOST (127.0.0.1:11434)   ORDO_MAX_INPUT_TOKENS (6000)
   ORDO_SESSION (one per repository)   ORDO_HOME (~/.ordo)   ORDO_KEEP_ALIVE (30m)
   ORDO_BASE_URL + ORDO_API_KEY: use an OpenAI-compatible server (llama.cpp, LM Studio, vLLM) instead of Ollama
 
@@ -1521,7 +1523,8 @@ class _Parser(_ErrorStyle, argparse.ArgumentParser):
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     g = common.add_argument_group("common options")
-    g.add_argument("--model", default=DEFAULT_MODEL, help="model name (env ORDO_MODEL, default ordo:3b)")
+    g.add_argument("--model", default=DEFAULT_MODEL,
+                   help="model name (env ORDO_MODEL; default: the installed Ordo, preferring the Hugging Face pull)")
     g.add_argument("--host", default=DEFAULT_HOST, help="Ollama URL (env OLLAMA_HOST)")
     g.add_argument("--base-url", default=DEFAULT_BASE_URL,
                    help="OpenAI-compatible server instead of Ollama: llama.cpp, LM Studio, vLLM (env ORDO_BASE_URL)")

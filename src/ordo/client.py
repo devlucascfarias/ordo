@@ -18,8 +18,9 @@ from .contract import GcMode, build_messages
 DEFAULT_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 DEFAULT_MODEL = os.environ.get("ORDO_MODEL", "ordo:3b")
 DEFAULT_BASE_URL = os.environ.get("ORDO_BASE_URL", "")
-# names the published model is usually installed under (local Modelfile or the Hugging Face quickstart)
-KNOWN_NAMES = ("ordo:3b", "hf.co/devlucascfarias/ordo-3b")
+# names the published model is usually installed under, in order of preference: the Hugging Face pull (what
+# `ordo setup` installs and `ollama pull` updates) first, then a local Modelfile build, which may be older
+KNOWN_NAMES = ("hf.co/devlucascfarias/ordo-3b", "ordo:3b")
 
 
 @dataclass
@@ -91,6 +92,10 @@ def call_ollama_ordo(
     timeout: float = 300.0,
 ) -> OrdoResult:
     base = normalize_host(host)
+    if model == DEFAULT_MODEL and not os.environ.get("ORDO_MODEL") and (base, model) not in _resolved:
+        # no model chosen: use the installed Ordo by preference order, so a Hugging Face pull wins over an
+        # older local `ordo:3b` build
+        _resolved[(base, model)] = find_ordo_model(base) or model
     name = _resolved.get((base, model), model)
     payload = {
         "model": name,

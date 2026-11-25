@@ -30,18 +30,19 @@ ordo setup
 ```
 
 `pip` installs the CLI only. `ordo setup` checks the model server, downloads the Ordo model through Ollama
-if it is missing (about 6.2 GB, after asking; `--yes` skips the question) and runs one test call:
+if it is missing (about 1.9 GB, after asking; `--yes` skips the question) and runs one test call:
 
 ```text
 [ok] server: Ollama at http://127.0.0.1:11434 (3 model(s) installed)
-[ok] model: ordo:3b
-[ok] test call: 8.9s, valid YAML, status FAIL, cites src/fx.py
+[ok] model: hf.co/devlucascfarias/ordo-3b:latest
+[ok] test call: 1.3s, valid YAML, status FAIL, cites src/fx.py
 ```
 
 Requires Python 3.10+ and a running [Ollama](https://ollama.com), or any OpenAI-compatible server
-(see [Other model servers](#other-model-servers)). The CLI looks for the model as `ordo:3b` and falls
-back to any installed `hf.co/devlucascfarias/ordo-3b` tag automatically. Manual install:
-`ollama pull hf.co/devlucascfarias/ordo-3b`.
+(see [Other model servers](#other-model-servers)). Without `ORDO_MODEL`, the CLI uses the installed
+`hf.co/devlucascfarias/ordo-3b` (any tag), then a local `ordo:3b` build. Manual install:
+`ollama pull hf.co/devlucascfarias/ordo-3b` (Q4_K_M; add `:Q8_0` for the larger variant). Run the same
+command again to update.
 
 ## Commands
 
@@ -102,7 +103,7 @@ Use `--` before the command when it has its own flags that could clash (`ordo ru
 
 | Variable | Default |
 |---|---|
-| `ORDO_MODEL` | `ordo:3b` |
+| `ORDO_MODEL` | installed Ordo (`hf.co/devlucascfarias/ordo-3b`, then `ordo:3b`) |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` (server-style values such as `0.0.0.0:11434` are accepted) |
 | `ORDO_MAX_INPUT_TOKENS` | `6000` |
 | `ORDO_SESSION` | one session per repository |
@@ -121,7 +122,7 @@ Ordo runs on any server with an OpenAI-compatible `/v1/chat/completions` endpoin
 (`llama-server`), LM Studio, vLLM, LocalAI. Point `ORDO_BASE_URL` (or `--base-url`) at it:
 
 ```bash
-llama-server -m ordo-3b.gguf -c 16384 --port 8080      # context of 16k tokens, as Ordo expects
+llama-server -m ordo-3b-Q4_K_M.gguf -c 16384 --port 8080      # context of 16k tokens, as Ordo expects
 export ORDO_BASE_URL=http://127.0.0.1:8080              # /v1 is added when missing
 ordo run -i "why does the build fail?" -- npm run build
 ```
@@ -168,14 +169,16 @@ parsed = parse_output(res.text, "TOOL_OUTPUT")      # YAML (+ repair) and schema
 report = verify(parsed.obj, log_text, "TOOL_OUTPUT") # grounding check
 ```
 
-## Known limitations of the published model (Ordo 3B v2.0)
+## Known limitations of the published model (Ordo 3B v2)
 
-- File paths, line numbers and status are usually right; **`exact_snippets` are sometimes invented**,
-  which is why the grounding check exists.
-- `MEMORY_COMPACT` does not follow its schema reliably and can invent facts, hence the deterministic `compact`.
-- The published GGUF is FP16 (6.2 GB): the first call can take ~45 s while the model loads.
+- **Line numbers** are the weakest field: about two thirds of required lines are cited exactly. File and
+  status are right in over 80% and 95% of cases. The grounding check flags any citation not in the input.
+- **Go packages in subdirectories** are often cited by file name only (`lru.go` instead of `lru/lru.go`).
+- `MEMORY_COMPACT` follows its schema in the Q8_0 variant but less reliably in Q4_K_M, which is one reason
+  `compact` is deterministic by default.
 
-A new version of the model is in training; the CLI contract stays the same.
+Measured results and the comparison with v1 are on the
+[model card](https://huggingface.co/devlucascfarias/ordo-3b).
 
 ## Development
 
