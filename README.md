@@ -104,7 +104,7 @@ Use `--` before the command when it has its own flags that could clash (`ordo ru
   `ordo show <id> --grep "KeyError"` returns the exact original lines when the summary is not enough.
 - **`--json`** on `run`/`filter`/`slice`/`search`/`stats` prints an envelope with the parsed result, exit code,
   warnings, tokens and `raw_id`.
-- **Large input is windowed** to `--budget` tokens (default 6000) around error lines; the cut is marked in the text.
+- **Large input is windowed** to `--budget` tokens (default 2500) around error lines; the cut is marked in the text.
 - **`compact` is deterministic by default**: it is built only from what the session recorded: `dead-end`,
   `note` (minus what `ordo forget` retracted), the exit code of each test, build or lint command from the
   last `ORDO_LEDGER_HOURS` (never the model's summary), and the
@@ -127,7 +127,7 @@ Use `--` before the command when it has its own flags that could clash (`ordo ru
 |---|---|
 | `ORDO_MODEL` | installed Ordo (`hf.co/devlucascfarias/ordo-3b`, then `ordo:3b`) |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` (server-style values such as `0.0.0.0:11434` are accepted) |
-| `ORDO_MAX_INPUT_TOKENS` | `6000` |
+| `ORDO_MAX_INPUT_TOKENS` | `2500` |
 | `ORDO_SESSION` | one session per repository |
 | `ORDO_KEEP_ALIVE` | `30m` (how long Ollama keeps the model loaded) |
 | `ORDO_HOME` | `~/.ordo` |

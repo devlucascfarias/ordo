@@ -131,6 +131,9 @@ def test_json_envelope(model, capsys):
 def test_guide(capsys):
     code, out = run(capsys, "guide")
     assert code == 0 and out.startswith("## Ordo") and "ordo show <raw_id>" in out and "ordo run -i" in out
+    assert len(out) < 1600  # agents resend AGENTS.md on every step: keep it short
+    code, full = run(capsys, "guide", "--full")
+    assert code == 0 and "Output contract" in full and len(full) > 2 * len(out)
 
 
 def test_run_bypass_short_output(model, capsys):
@@ -251,15 +254,15 @@ class _TTY(io.StringIO):
 
 def test_guide_is_plain_markdown_when_piped_and_rendered_at_a_terminal(monkeypatch, capsys):
     code, out = run(capsys, "guide")  # capsys is not a TTY: exactly the Markdown agents read
-    assert code == 0 and out == cli.GUIDE.rstrip("\n") + "\n"
+    assert code == 0 and out == cli.GUIDE_SHORT.rstrip("\n") + "\n"
     tty = _TTY()
     monkeypatch.setattr(sys, "stdout", tty)
-    assert cli.main(["guide"]) == 0
+    assert cli.main(["guide", "--full"]) == 0
     shown = re.sub(r"\x1b\[[0-9;]*m", "", tty.getvalue())
     assert "Output contract" in shown and "### " not in shown and "|---|" not in shown
     tty2 = _TTY()
     monkeypatch.setattr(sys, "stdout", tty2)
-    assert cli.main(["guide", "--raw"]) == 0 and tty2.getvalue() == cli.GUIDE.rstrip("\n") + "\n"
+    assert cli.main(["guide", "--raw"]) == 0 and tty2.getvalue() == cli.GUIDE_SHORT.rstrip("\n") + "\n"
 
 
 def test_top_help_is_plain_when_piped_and_colored_at_a_terminal(monkeypatch, capsys):
@@ -646,3 +649,14 @@ def test_dashboard_with_no_data_explains_how_to_start(ordo_home, capsys):
     code, _ = run(capsys, "dashboard", "--no-open")
     page = (ordo_home / "home" / "dashboard.html").read_text(encoding="utf-8")
     assert code == 0 and "No tool output recorded yet" in page
+
+
+def test_run_flags_a_model_status_that_contradicts_the_exit_code(model, capsys):
+    model.reply = SMOKE_OUT  # the model says FAIL
+    script = f"import sys; sys.stdout.write({SMOKE_LOG!r}); sys.exit(0)"
+    code, out = run(capsys, "run", "--force", "-i", "why does it fail", sys.executable, "-c", script)
+    assert code == 0 and "# ordo: the command exited 0 but the model reported FAIL" in out
+    model.reply = "status: PASS\nsummary: all good"
+    script = f"import sys; sys.stdout.write({SMOKE_LOG!r}); sys.exit(1)"
+    code, out = run(capsys, "run", "--force", "-i", "status", sys.executable, "-c", script)
+    assert code == 1 and "# ordo: the command exited 1 but the model reported PASS" in out

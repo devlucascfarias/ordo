@@ -27,7 +27,9 @@ from .session import Session
 from .textproc import clean, est_tokens, shorten_line, window_file, window_log
 from .verify import verify
 
-DEFAULT_BUDGET = int(os.environ.get("ORDO_MAX_INPUT_TOKENS", "6000"))
+# prefill dominates local latency and grows faster than linearly (6.4k tokens: 62 s, 2.9k: 13 s on a mid GPU);
+# the error-first window keeps the cause at 2.5k on every long benchmark log
+DEFAULT_BUDGET = int(os.environ.get("ORDO_MAX_INPUT_TOKENS", "2500"))
 BYPASS_LINES, BYPASS_TOKENS = 40, 400  # below this, the model spends more tokens than it saves
 LONG_LINE = 800  # characters; longer lines are shortened (start + marker + end) before the model
 RAW_KEEP = 300  # raw logs kept in ~/.ordo/runs (the oldest are removed)
@@ -361,6 +363,12 @@ def cmd_run(args) -> int:
     out = _filter_or_bypass(args, GcMode.TOOL_OUTPUT, intent, text)
     if out.status is None:  # short output or fallback: status comes from the exit code
         out.status = "PASS" if code == 0 else "FAIL"
+    elif out.route == "model" and (code == 0) != (out.status in ("PASS", "WARN")):
+        # the exit code is a fact; a status that contradicts it is the model's reading and must not be trusted blindly
+        note = (f"the command exited {code} but the model reported {out.status}; "
+                "check the original with `ordo show`")
+        out.warnings.append(note)
+        out.text += f"\n# ordo: {note}"
     rid = save_raw(text, args.session_obj)
     emit(args, "run", out, f"exit={code}", code=code, raw_id=rid)
     args.session_obj.append("run", command=" ".join(cmd), exit=code, intent=intent, cmd_seconds=round(elapsed, 2),
@@ -1114,6 +1122,23 @@ def cmd_show(args) -> int:
     return 0
 
 
+# what an agent needs on every turn (agents resend AGENTS.md with each step, so every line here is paid many times)
+GUIDE_SHORT = """## Ordo: tool-output filter
+
+Run verbose commands (tests, builds, linters) through `ordo run -i "<what you need to know>" -- <command>`:
+it prints a short YAML (status, summary, file and line, snippets) instead of the full log. Run short commands
+directly.
+
+- `ordo show <raw_id> --grep "<regex>"` (or `--lines A-B`) prints exact original lines; use it instead of
+  re-running the command.
+- `# ordo: unverified: ...` marks a citation not found in the output: confirm it with `ordo show` first.
+- If ordo says it is showing raw output, read the body as a normal log.
+- Memory across sessions: `ordo note "<fact>"`, `ordo dead-end "<attempt>" "<why it failed>"`,
+  `ordo compact -i "<goal>"` to read it back; `ordo memory`, `ordo edit`, `ordo forget` to keep it true.
+
+`ordo guide --full` lists every command and the output contract.
+"""
+
 GUIDE = """## Ordo: tool-output filter for this repository
 
 `ordo` runs commands and condenses their output into causal YAML (status, file, line, symbol, error) using a
@@ -1361,9 +1386,10 @@ def cmd_guide(args) -> int:
     Plain Markdown when piped, redirected, called through MCP or with --raw (what agents read and what goes
     into AGENTS.md); rendered with rich only for a person at an interactive terminal.
     """
+    text = GUIDE if args.full else GUIDE_SHORT
     interactive = _SINK.get() is None and sys.stdout.isatty() and not args.raw
     if not interactive:
-        _print(GUIDE)
+        _print(text)
         return 0
     from rich.console import Console
     from rich.markdown import Heading, Markdown
@@ -1381,8 +1407,9 @@ def cmd_guide(args) -> int:
 
     console = Console()
     console.width = min(console.width, 110)
-    console.print(_Guide(GUIDE, code_theme="ansi_dark", inline_code_theme="ansi_dark"))
-    console.print(Text("\nplain Markdown for AGENTS.md: ordo guide --raw >> AGENTS.md", style="dim"))
+    console.print(_Guide(text, code_theme="ansi_dark", inline_code_theme="ansi_dark"))
+    console.print(Text("\nplain Markdown for AGENTS.md: ordo guide --raw >> AGENTS.md"
+                       + ("" if args.full else "   (every command: ordo guide --full)"), style="dim"))
     return 0
 
 
@@ -1426,7 +1453,7 @@ exit codes
   3: model failed with --no-fallback   search: 1 when nothing matches
 
 environment
-  ORDO_MODEL (installed Ordo)   OLLAMA_HOST (127.0.0.1:11434)   ORDO_MAX_INPUT_TOKENS (6000)
+  ORDO_MODEL (installed Ordo)   OLLAMA_HOST (127.0.0.1:11434)   ORDO_MAX_INPUT_TOKENS (2500)
   ORDO_SESSION (one per repository)   ORDO_HOME (~/.ordo)   ORDO_KEEP_ALIVE (30m)
   ORDO_BASE_URL + ORDO_API_KEY: use an OpenAI-compatible server (llama.cpp, LM Studio, vLLM) instead of Ollama
 
@@ -1583,7 +1610,7 @@ def build_parser() -> argparse.ArgumentParser:
     usages = {"run": "-i INTENT [--cmd-timeout S] -- CMD...", "filter": "-i INTENT [--mode MODE] [FILE]",
               "slice": "-i INTENT FILE", "search": "-i INTENT [-C N] PATTERN [PATH...]",
               "dead-end": "ATTEMPT REASON", "note": "TEXT", "forget": "ID|TEXT [--all]", "memory": "[--grep RX] [--json]", "savings": "[--top N] [--json]", "dashboard": "[--no-open]", "prune": "[--missing] [--older-than DAYS] [--yes]", "edit": "ID [TEXT] [--reason R]", "compact": "-i GOAL [--from FILE] [--neural]",
-              "stats": "", "mcp": "[--no-run]", "show": "[ID|last] [--lines A-B] [--grep RX] [-C N] [--tail N]", "guide": "[--raw]", "setup": "[--yes] [--no-test]"}
+              "stats": "", "mcp": "[--no-run]", "show": "[ID|last] [--lines A-B] [--grep RX] [-C N] [--tail N]", "guide": "[--full] [--raw]", "setup": "[--yes] [--no-test]"}
 
     def add(name: str, summary: str, examples: list[str], func) -> argparse.ArgumentParser:
         s = sub.add_parser(name, parents=[common], help=summary, description=summary, formatter_class=fmt,
@@ -1692,7 +1719,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-test", action="store_true", help="skip the test call")
 
     s = add("guide", "instructions for coding agents, to paste into AGENTS.md (rendered at a terminal, Markdown when piped)",
-            ["ordo guide >> AGENTS.md", "ordo guide --raw   # plain Markdown at a terminal too"], cmd_guide)
+            ["ordo guide >> AGENTS.md", "ordo guide --full   # every command and the output contract",
+             "ordo guide --raw   # plain Markdown at a terminal too"], cmd_guide)
+    s.add_argument("--full", action="store_true", help="the complete reference instead of the short guide")
     s.add_argument("--raw", action="store_true", help="print plain Markdown even at an interactive terminal")
     return p
 
