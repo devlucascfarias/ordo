@@ -625,7 +625,8 @@ def test_dashboard_writes_a_self_contained_page_and_opens_it(ordo_home, capsys, 
     assert code == 0 and "dashboard.html" in out and opened and opened[0].startswith("file:")
     assert "<script" not in page and "http" not in page.replace("http-equiv", "")  # no external assets
     assert "api&amp;co" in page and "someuser" not in page and ">~<" in page  # escaped; home folder hidden
-    assert "4.4k" in page and "of 4,530" in page and "3,940" in page and "1 short enough to pass through" in page
+    assert "4,390" in page and "4,530" in page and "3,940" in page and "1 short enough to pass through" in page
+    assert "Fira Code" in page and page.count("<svg") >= 5  # typeface and inline icons
     opened.clear()
     assert run(capsys, "dashboard", "--no-open")[0] == 0 and not opened
 
