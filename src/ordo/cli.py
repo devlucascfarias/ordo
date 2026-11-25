@@ -1670,7 +1670,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reason", help="new reason (dead ends only)")
 
     s = add("forget", "retract a note or dead end that is wrong or obsolete",
-            ["ordo forget n3f9a1c", 'ordo forget "Gemini quota"   # by text, if it matches one item'], cmd_forget)
+            ["ordo forget n3f9a1c", 'ordo forget "API quota"   # by text, if it matches one item'], cmd_forget)
     s.add_argument("item", nargs="?", help="id from `ordo memory` or text contained in exactly one item")
     s.add_argument("--all", action="store_true", help="retract every item that matches the text")
 

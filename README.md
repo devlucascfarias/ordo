@@ -57,7 +57,7 @@ codex mcp add ordo -- ordo mcp         # Codex CLI
 
 [![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=ordo&config=eyJjb21tYW5kIjoib3JkbyIsImFyZ3MiOlsibWNwIl19)
 
-Cursor, Gemini CLI, Windsurf and other clients take the same entry in their MCP config file:
+Antigravity (`.agents/mcp_config.json` in the workspace, or `~/.gemini/config/mcp_config.json` for all projects), Cursor, Windsurf and other clients take the same entry in their MCP config file:
 
 ```json
 { "mcpServers": { "ordo": { "command": "ordo", "args": ["mcp"] } } }
