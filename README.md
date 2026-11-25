@@ -24,6 +24,32 @@ causal_trace:
 # ordo: unverified: snippet not verbatim: src/ledger/fx.py:5 (...)
 ```
 
+## Use cases
+
+**Where Ordo helps**
+
+- **Debugging with long test output**: large suites (pytest, jest, go test, cargo test) where one failure is
+  buried among hundreds of passing tests, warnings and verbose output. The agent gets the failing file, line and
+  assertion in a few hundred tokens.
+- **Builds and linters with many messages**: tsc, eslint, mypy, maven or dotnet output where the real error sits
+  between warnings.
+- **CI logs**: pass a failed CI log to `ordo filter` and get the cause instead of scrolling.
+- **Large source files**: `ordo slice` returns the symbol you asked about with exact line ranges, instead of the
+  whole file.
+- **Long sessions**: notes and dead ends persist per project, so an agent resuming work does not retry what
+  already failed.
+- **Small context windows and local agents**: agents on local models or tight budgets, where every thousand tokens
+  matters.
+- **Private code**: everything runs on your machine; logs and code never leave it.
+
+**Where it does not**
+
+- **Short output** (under ~40 lines) is passed through unchanged; there is nothing to save.
+- **Writing code from scratch**: tasks that run few commands give Ordo nothing to filter.
+- **Agents that already trim command output** see smaller gains; Ordo then mostly adds precision (the cause, not
+  just the tail of the log).
+- **Slow hardware**: on a modest GPU each condensed call takes several seconds; on CPU only, more.
+
 ## Install
 
 ```bash
