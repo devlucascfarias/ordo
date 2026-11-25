@@ -1,7 +1,7 @@
 # ordo
 
 <p align="center">
-  <img src="assets/ordo-guide.png" alt="ordo guide rendered in a terminal" width="800">
+ <img width="812" height="469" alt="image" src="https://github.com/user-attachments/assets/07e92b18-eda1-4ccf-9d2b-8ad64217c4c7" />
 </p>
 
 Command-line harness for **[Ordo 3B](https://huggingface.co/devlucascfarias/ordo-3b)**, a small local
