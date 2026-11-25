@@ -626,8 +626,9 @@ def test_dashboard_writes_a_self_contained_page_and_opens_it(ordo_home, capsys, 
     page = (ordo_home / "home" / "dashboard.html").read_text(encoding="utf-8")
     assert code == 0 and "dashboard.html" in out and opened and opened[0].startswith("file:")
     import re as _re
-    assert "<script" not in page and "<link" not in page and " src=" not in page  # nothing loaded from outside
-    assert set(_re.findall(r'href="([^"]+)"', page)) == {"https://github.com/devlucascfarias/ordo",
+    links = _re.findall(r"<link[^>]*>", page)  # only the inline tab icon; nothing loaded from outside
+    assert "<script" not in page and " src=" not in page and len(links) == 1 and 'href="data:image/svg+xml,' in links[0]
+    assert set(h for h in _re.findall(r'href="([^"]+)"', page) if not h.startswith("data:")) == {"https://github.com/devlucascfarias/ordo",
                                                          "https://huggingface.co/devlucascfarias/ordo-3b"}
     assert "api&amp;co" in page and "someuser" not in page and ">~<" in page  # escaped; home folder hidden
     assert "4,390" in page and "4,530" in page and "3,940" in page and "<b>1</b> short enough to pass through" in page

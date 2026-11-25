@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import html
 import time
+from urllib.parse import quote
 
 from . import __version__
 
@@ -47,6 +48,13 @@ HF_URL = "https://huggingface.co/devlucascfarias/ordo-3b"
 MARK = ('<svg class="mark" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
         'stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 5h18"/><path d="M6 10h12"/>'
         '<path d="M9 15h6"/><path d="M11.5 20h1"/></svg>')  # a sieve: wide input, narrow output
+
+# the header mark as the tab icon: inline data URI (no file, no request), ink colour following the system theme
+_FAVICON_SVG = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-width="2.2" '
+                'stroke-linecap="round"><style>path{stroke:#18202b}@media (prefers-color-scheme:dark){path{'
+                'stroke:#e4e9f0}}</style><path d="M3 5h18"/><path d="M6 10h12"/><path d="M9 15h6"/>'
+                '<path d="M11.5 20h1"/></svg>')
+FAVICON = "data:image/svg+xml," + quote(_FAVICON_SVG, safe=" :;=,/")
 
 CSS = """
 :root {
@@ -225,7 +233,8 @@ def render(rep: dict, memory: dict | None = None) -> str:
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
-        f"<title>Ordo</title><style>{CSS}</style></head><body><main>"
+        f'<title>Ordo</title><link rel="icon" type="image/svg+xml" href="{FAVICON}">'
+        f"<style>{CSS}</style></head><body><main>"
         f'<header>{MARK}<span class="word">ordo</span><span class="ver">v{html.escape(__version__)}</span>'
         f'<nav><a href="{GITHUB_URL}" rel="noopener" aria-label="GitHub">{GITHUB}<span>GitHub</span></a>'
         f'<a href="{HF_URL}" rel="noopener" aria-label="Hugging Face">{MODEL}<span>Hugging Face</span></a></nav>'
