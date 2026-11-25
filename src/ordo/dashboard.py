@@ -11,7 +11,7 @@ import time
 from urllib.parse import quote
 
 from . import __version__
-from ._assets import BARUCHLABS_PNG
+from ._assets import BARUCHLABS_DARK_PNG, BARUCHLABS_LIGHT_PNG
 
 
 def _n(x: int) -> str:
@@ -147,11 +147,13 @@ details[open] summary .chev { transform: rotate(90deg); }
 footer { margin-top: 7vh; display: grid; gap: 10px; color: var(--graphite); font-size: 13px; }
 footer .routes { display: flex; flex-wrap: wrap; gap: 6px 22px; }
 footer span { display: inline-flex; align-items: center; gap: 7px; }
-.credit a { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-weight: 500;
+.credit { justify-content: center; text-align: center; margin-top: 18px; padding-top: 18px;
+          border-top: 1px solid var(--rule); }
+.credit a { display: inline-flex; align-items: center; gap: 7px; color: var(--ink); font-weight: 500;
             border-bottom: 1px solid var(--rule); }
 .credit a:hover { border-bottom-color: var(--ink); }
+.credit picture { display: inline-flex; }
 .credit img { width: 22px; height: 22px; }
-@media (prefers-color-scheme: dark) { .credit img { filter: invert(1); } }
 .empty { color: var(--graphite); max-width: 52ch; }
 .empty code { color: var(--ink); }
 
@@ -245,8 +247,9 @@ def render(rep: dict, memory: dict | None = None) -> str:
             f"<span>{LOCK}Generated {generated} from local session files. Nothing on this page leaves your machine. "
             "Token counts are estimates.</span>"
             f'<span class="credit">Ordo CLI and model developed by <a href="{BARUCHLABS_URL}" target="_blank" '
-            f'rel="noopener noreferrer"><img src="data:image/png;base64,{BARUCHLABS_PNG}" alt="" width="22" '
-            'height="22">BaruchLabs</a></span></footer>')
+            f'rel="noopener noreferrer"><picture><source media="(prefers-color-scheme: dark)" '
+            f'srcset="data:image/png;base64,{BARUCHLABS_DARK_PNG}"><img alt="" width="22" height="22" '
+            f'src="data:image/png;base64,{BARUCHLABS_LIGHT_PNG}"></picture>BaruchLabs</a></span></footer>')
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'

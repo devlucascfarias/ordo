@@ -7,6 +7,7 @@
 Command-line harness for **[Ordo 3B](https://huggingface.co/devlucascfarias/ordo-3b)**, a small local
 model that filters noisy tool output (test runs, builds, linters, large files) into compact causal
 YAML for coding agents, so the agent reads the failure cause instead of 10,000 lines of logs.
+The CLI and the model are developed by [BaruchLabs](https://baruchlabs.com/).
 
 ```
 $ ordo run -i "Check why the multi-currency settlement test fails" pytest -v
@@ -190,4 +191,4 @@ python -m pytest -q
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE). Developed by [BaruchLabs](https://baruchlabs.com/).

@@ -627,7 +627,7 @@ def test_dashboard_writes_a_self_contained_page_and_opens_it(ordo_home, capsys, 
     assert code == 0 and "dashboard.html" in out and opened and opened[0].startswith("file:")
     import re as _re
     links = _re.findall(r"<link[^>]*>", page)  # only the inline tab icon; nothing loaded from outside
-    srcs = _re.findall(r' src="([^"]+)"', page)
+    srcs = _re.findall(r' src(?:set)?="([^"]+)"', page)
     assert "<script" not in page and len(links) == 1 and 'href="data:image/svg+xml,' in links[0]
     assert srcs and all(x.startswith("data:image/") for x in srcs)  # images are embedded
     assert set(h for h in _re.findall(r'href="([^"]+)"', page) if not h.startswith("data:")) == {"https://github.com/devlucascfarias/ordo",
