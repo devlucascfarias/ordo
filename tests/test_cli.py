@@ -618,15 +618,21 @@ def test_dashboard_writes_a_self_contained_page_and_opens_it(ordo_home, capsys, 
     api.append("run", command="python -m pytest -q", raw_tokens=30, out_tokens=30, route="bypass")
     home_s = Session(path=sessions / "someuser-0123456789.jsonl", root=fake_home)  # ran outside a repository
     home_s.append("filter", raw_tokens=500, out_tokens=50, route="model", seconds=1)
+    api.append("note", id="n0000aa", text="cache <keyed> by item")
+    api.append("dead_end", id="d0000bb", attempt="retry forever", reason="hangs CI")
     opened = []
     monkeypatch.setattr(webbrowser, "open", lambda url: opened.append(url) or True)
     code, out = run(capsys, "dashboard")
     page = (ordo_home / "home" / "dashboard.html").read_text(encoding="utf-8")
     assert code == 0 and "dashboard.html" in out and opened and opened[0].startswith("file:")
-    assert "<script" not in page and "http" not in page.replace("http-equiv", "")  # no external assets
+    import re as _re
+    assert "<script" not in page and "<link" not in page and " src=" not in page  # nothing loaded from outside
+    assert set(_re.findall(r'href="([^"]+)"', page)) == {"https://github.com/devlucascfarias/ordo",
+                                                         "https://huggingface.co/devlucascfarias/ordo-3b"}
     assert "api&amp;co" in page and "someuser" not in page and ">~<" in page  # escaped; home folder hidden
-    assert "4,390" in page and "4,530" in page and "3,940" in page and "1 short enough to pass through" in page
+    assert "4,390" in page and "4,530" in page and "3,940" in page and "<b>1</b> short enough to pass through" in page
     assert "Fira Code" in page and page.count("<svg") >= 5  # typeface and inline icons
+    assert "<details>" in page and "cache &lt;keyed&gt; by item" in page and "failed: hangs CI" in page
     opened.clear()
     assert run(capsys, "dashboard", "--no-open")[0] == 0 and not opened
 

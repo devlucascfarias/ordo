@@ -904,7 +904,12 @@ def cmd_dashboard(args) -> int:
     home = ordo_home()
     path = home / "dashboard.html"
     home.mkdir(parents=True, exist_ok=True)
-    path.write_text(render(savings_report(home)), encoding="utf-8")
+    mem: dict[str, list[dict]] = {}
+    for f in sorted((home / "sessions").glob("*.jsonl")):
+        sess = Session(path=f, root=Path("."))
+        mem.setdefault(_display_project(sess), []).extend(
+            {"id": m.id, "kind": m.kind, "text": m.text, "reason": m.reason} for m in memory(sess))
+    path.write_text(render(savings_report(home), mem), encoding="utf-8")
     _print(f"# ordo dashboard: {path}")
     if not args.no_open and not webbrowser.open(path.resolve().as_uri()):
         _print("# ordo dashboard: no browser available here; open the file above in one")
