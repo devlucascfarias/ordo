@@ -11,6 +11,7 @@ import time
 from urllib.parse import quote
 
 from . import __version__
+from ._assets import BARUCHLABS_PNG
 
 
 def _n(x: int) -> str:
@@ -45,6 +46,12 @@ GITHUB = ('<svg class="ic" width="15" height="15" viewBox="0 0 16 16" fill="curr
           ' 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>')
 GITHUB_URL = "https://github.com/devlucascfarias/ordo"
 HF_URL = "https://huggingface.co/devlucascfarias/ordo-3b"
+BARUCHLABS_URL = "https://baruchlabs.com/"
+
+
+def _level(pct: float) -> str:
+    """Colour class for a reduction: the higher, the greener. No warning colours: a low figure is not an error."""
+    return "r-hi" if pct >= 90 else "r-good" if pct >= 70 else "r-mid" if pct >= 40 else "r-low"
 MARK = ('<svg class="mark" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
         'stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M3 5h18"/><path d="M6 10h12"/>'
         '<path d="M9 15h6"/><path d="M11.5 20h1"/></svg>')  # a sieve: wide input, narrow output
@@ -60,10 +67,12 @@ CSS = """
 :root {
   color-scheme: light dark;
   --paper: #eef1f5; --ink: #18202b; --graphite: #5e6a78; --rule: #d5dbe3; --raw: #c3ccd7; --signal: #2e46c8; --warn: #a1500f; --tint: #dfe5fb;
+  --r-hi: #177a45; --r-good: #0e7490; --r-mid: #2e46c8; --r-low: #5e6a78;
   --mono: "Fira Code", "Cascadia Code", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --paper: #10141a; --ink: #e4e9f0; --graphite: #8a95a4; --rule: #232a34; --raw: #2c3541; --signal: #9aaeff; --warn: #f0b26b; --tint: #1d2540; }
+  :root { --paper: #10141a; --ink: #e4e9f0; --graphite: #8a95a4; --rule: #232a34; --raw: #2c3541; --signal: #9aaeff; --warn: #f0b26b; --tint: #1d2540;
+          --r-hi: #5fd394; --r-good: #56c7dd; --r-mid: #9aaeff; --r-low: #8a95a4; }
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--paper); color: var(--ink); }
@@ -108,8 +117,8 @@ a:focus-visible, summary:focus-visible { outline: 2px solid var(--signal); outli
 .project .name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project .saved { margin-left: auto; font-weight: 500; white-space: nowrap; color: var(--signal); }
 .project .saved .unit { color: var(--graphite); font-weight: 400; font-size: 13px; margin-left: 8px; }
-.pill { display: inline-block; font-size: 12px; font-weight: 500; color: var(--signal); background: var(--tint);
-        border-radius: 999px; padding: 1px 8px; margin-left: 8px; vertical-align: 1px; }
+.pct-l { font-weight: 500; }
+.r-hi { color: var(--r-hi); } .r-good { color: var(--r-good); } .r-mid { color: var(--r-mid); } .r-low { color: var(--r-low); }
 .project .bars { margin: 12px 0 10px; display: grid; gap: 4px; }
 .project .bars .track { height: 4px; }
 .meta { display: flex; flex-wrap: wrap; gap: 6px 20px; color: var(--graphite); font-size: 13px; }
@@ -138,6 +147,11 @@ details[open] summary .chev { transform: rotate(90deg); }
 footer { margin-top: 7vh; display: grid; gap: 10px; color: var(--graphite); font-size: 13px; }
 footer .routes { display: flex; flex-wrap: wrap; gap: 6px 22px; }
 footer span { display: inline-flex; align-items: center; gap: 7px; }
+.credit a { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); font-weight: 500;
+            border-bottom: 1px solid var(--rule); }
+.credit a:hover { border-bottom-color: var(--ink); }
+.credit img { width: 22px; height: 22px; }
+@media (prefers-color-scheme: dark) { .credit img { filter: invert(1); } }
 .empty { color: var(--graphite); max-width: 52ch; }
 .empty code { color: var(--ink); }
 
@@ -205,8 +219,8 @@ def render(rep: dict, memory: dict | None = None) -> str:
             rows.append(
                 '<article class="project"><div class="top">'
                 f'<div class="name">{icon}<span>{html.escape(name)}</span></div>'
-                f'<div class="saved">{_n(r["saved"])}<span class="unit">tokens saved</span>'
-                f'<span class="pill">{"-" if r["saved_pct"] >= 0.5 else ""}{r["saved_pct"]:.0f}%</span></div></div>'
+                f'<div class="saved">{_n(r["saved"])}<span class="unit">tokens saved '
+                f'(<span class="pct-l {_level(r["saved_pct"])}">{r["saved_pct"]:.0f}%</span>)</span></div></div>'
                 f'<div class="bars">{_bar("raw", 100)}{_bar("sent", 100 * r["sent"] / r["raw"] if r["raw"] else 0)}</div>'
                 f'<div class="meta"><span>{TERMINAL}<b>{_n(r["calls"])}</b> calls</span>'
                 f'<span>{CLOCK}last used {html.escape(r.get("last", ""))}</span></div></article>')
@@ -222,14 +236,17 @@ def render(rep: dict, memory: dict | None = None) -> str:
             "</div></section>"
             '<section class="projects"><h2>Projects</h2>'
             f'<p class="sub">{len(projects)} with recorded tool output, most saved first; '
-            f'<b class="hl">{t["saved_pct"]:.0f}% less context</b> overall</p>' + "".join(rows) + "</section>"
+            f'<b class="{_level(t["saved_pct"])}">{t["saved_pct"]:.0f}% less context</b> overall</p>' + "".join(rows) + "</section>"
             + _memory(memory or {}) +
             '<footer><div class="routes">'
             f'<span>{CHIP}<b>{_n(t["filtered"])}</b> condensed by the model</span>'
             f'<span>{PASS}<b>{_n(t.get("bypass", 0))}</b> short enough to pass through</span>'
             f'<span>{ALERT}<b>{_n(t.get("fallback", 0))}</b> fallback</span></div>'
             f"<span>{LOCK}Generated {generated} from local session files. Nothing on this page leaves your machine. "
-            "Token counts are estimates.</span></footer>")
+            "Token counts are estimates.</span>"
+            f'<span class="credit">Ordo CLI and model developed by <a href="{BARUCHLABS_URL}" target="_blank" '
+            f'rel="noopener noreferrer"><img src="data:image/png;base64,{BARUCHLABS_PNG}" alt="" width="22" '
+            'height="22">BaruchLabs</a></span></footer>')
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'

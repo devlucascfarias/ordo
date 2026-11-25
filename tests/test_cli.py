@@ -627,9 +627,13 @@ def test_dashboard_writes_a_self_contained_page_and_opens_it(ordo_home, capsys, 
     assert code == 0 and "dashboard.html" in out and opened and opened[0].startswith("file:")
     import re as _re
     links = _re.findall(r"<link[^>]*>", page)  # only the inline tab icon; nothing loaded from outside
-    assert "<script" not in page and " src=" not in page and len(links) == 1 and 'href="data:image/svg+xml,' in links[0]
+    srcs = _re.findall(r' src="([^"]+)"', page)
+    assert "<script" not in page and len(links) == 1 and 'href="data:image/svg+xml,' in links[0]
+    assert srcs and all(x.startswith("data:image/") for x in srcs)  # images are embedded
     assert set(h for h in _re.findall(r'href="([^"]+)"', page) if not h.startswith("data:")) == {"https://github.com/devlucascfarias/ordo",
-                                                         "https://huggingface.co/devlucascfarias/ordo-3b"}
+                                                         "https://huggingface.co/devlucascfarias/ordo-3b",
+                                                         "https://baruchlabs.com/"}
+    assert 'target="_blank" rel="noopener noreferrer"' in page and "(<span" in page and "pill" not in page
     assert "api&amp;co" in page and "someuser" not in page and ">~<" in page  # escaped; home folder hidden
     assert "4,390" in page and "4,530" in page and "3,940" in page and "<b>1</b> short enough to pass through" in page
     assert "Fira Code" in page and page.count("<svg") >= 5  # typeface and inline icons
