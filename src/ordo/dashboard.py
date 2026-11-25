@@ -99,6 +99,7 @@ a:focus-visible, summary:focus-visible { outline: 2px solid var(--signal); outli
 .project .name { font-weight: 500; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .project .name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project .saved { margin-left: auto; font-weight: 500; white-space: nowrap; color: var(--signal); }
+.project .saved .unit { color: var(--graphite); font-weight: 400; font-size: 13px; margin-left: 8px; }
 .pill { display: inline-block; font-size: 12px; font-weight: 500; color: var(--signal); background: var(--tint);
         border-radius: 999px; padding: 1px 8px; margin-left: 8px; vertical-align: 1px; }
 .project .bars { margin: 12px 0 10px; display: grid; gap: 4px; }
@@ -137,7 +138,7 @@ footer span { display: inline-flex; align-items: center; gap: 7px; }
 @media (max-width: 520px) {
   body { padding: 6vh 20px 6vh; }
   header { margin-bottom: 6vh; }
-  .project .saved small { display: none; }
+  header nav a span { display: none; }
 }
 """
 
@@ -196,7 +197,8 @@ def render(rep: dict, memory: dict | None = None) -> str:
             rows.append(
                 '<article class="project"><div class="top">'
                 f'<div class="name">{icon}<span>{html.escape(name)}</span></div>'
-                f'<div class="saved">{_n(r["saved"])}<span class="pill">-{r["saved_pct"]:.0f}%</span></div></div>'
+                f'<div class="saved">{_n(r["saved"])}<span class="unit">tokens saved</span>'
+                f'<span class="pill">{"-" if r["saved_pct"] >= 0.5 else ""}{r["saved_pct"]:.0f}%</span></div></div>'
                 f'<div class="bars">{_bar("raw", 100)}{_bar("sent", 100 * r["sent"] / r["raw"] if r["raw"] else 0)}</div>'
                 f'<div class="meta"><span>{TERMINAL}<b>{_n(r["calls"])}</b> calls</span>'
                 f'<span>{CLOCK}last used {html.escape(r.get("last", ""))}</span></div></article>')
@@ -225,6 +227,7 @@ def render(rep: dict, memory: dict | None = None) -> str:
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>Ordo</title><style>{CSS}</style></head><body><main>"
         f'<header>{MARK}<span class="word">ordo</span><span class="ver">v{html.escape(__version__)}</span>'
-        f'<nav><a href="{GITHUB_URL}" rel="noopener">{GITHUB}GitHub</a>'
-        f'<a href="{HF_URL}" rel="noopener">{MODEL}Hugging Face</a></nav></header>'
+        f'<nav><a href="{GITHUB_URL}" rel="noopener" aria-label="GitHub">{GITHUB}<span>GitHub</span></a>'
+        f'<a href="{HF_URL}" rel="noopener" aria-label="Hugging Face">{MODEL}<span>Hugging Face</span></a></nav>'
+        "</header>"
         f"{body}</main></body></html>\n")
