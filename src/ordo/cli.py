@@ -1186,7 +1186,7 @@ def cmd_mcp(args) -> int:
     try:
         from .mcp_server import serve
     except ImportError:
-        print("ordo mcp: the MCP SDK is not installed; run: pip install \"ordo[mcp]\"", file=sys.stderr)
+        print("ordo mcp: the MCP SDK is not installed; run: pip install \"ordo-harness[mcp]\"", file=sys.stderr)
         return 2
     serve(allow_run=not args.no_run)
     return 0

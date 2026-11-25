@@ -27,11 +27,11 @@ causal_trace:
 ## Install
 
 ```bash
-pip install git+https://github.com/devlucascfarias/ordo.git
+pip install "ordo-harness[mcp]"
 ordo setup
 ```
 
-`pip` installs the CLI only. `ordo setup` checks the model server, downloads the Ordo model through Ollama
+`pip` installs the `ordo` command (the `[mcp]` extra adds the MCP server; drop it if you only use the CLI). `ordo setup` checks the model server, downloads the Ordo model through Ollama
 if it is missing (about 1.9 GB, after asking; `--yes` skips the question) and runs one test call:
 
 ```text
@@ -45,6 +45,25 @@ Requires Python 3.10+ and a running [Ollama](https://ollama.com), or any OpenAI-
 `hf.co/devlucascfarias/ordo-3b` (any tag), then a local `ordo:3b` build. Manual install:
 `ollama pull hf.co/devlucascfarias/ordo-3b` (Q4_K_M; add `:Q8_0` for the larger variant). Run the same
 command again to update.
+
+## Connect your agent
+
+Give your coding agent the Ordo tools over MCP with one line:
+
+```bash
+claude mcp add ordo -- ordo mcp        # Claude Code
+codex mcp add ordo -- ordo mcp         # Codex CLI
+```
+
+[![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=ordo&config=eyJjb21tYW5kIjoib3JkbyIsImFyZ3MiOlsibWNwIl19)
+
+Cursor, Gemini CLI, Windsurf and other clients take the same entry in their MCP config file:
+
+```json
+{ "mcpServers": { "ordo": { "command": "ordo", "args": ["mcp"] } } }
+```
+
+Agents without MCP can call the CLI directly: `ordo guide >> AGENTS.md` adds the instructions they need.
 
 ## Commands
 
@@ -138,25 +157,8 @@ own `/v1` endpoint ignores it, so with Ollama keep the default native backend.
 
 `ordo mcp` serves the same tools over MCP (stdio), so MCP-capable coding agents call them natively
 (`ordo_run`, `ordo_filter`, `ordo_slice`, `ordo_search`, `ordo_show`, `ordo_dead_end`, `ordo_note`,
-`ordo_memory`, `ordo_edit`, `ordo_forget`, `ordo_compact`, `ordo_stats`) and get structured results. Install the extra: `pip install "ordo[mcp] @ git+https://github.com/devlucascfarias/ordo.git"`.
-
-Register it in your agent (command `ordo`, args `["mcp"]`; add `--no-run` for read-only tools):
-
-```bash
-claude mcp add ordo -- ordo mcp                      # Claude Code
-```
-
-```toml
-# Codex: ~/.codex/config.toml
-[mcp_servers.ordo]
-command = "ordo"
-args = ["mcp"]
-```
-
-```json
-// Cursor (.cursor/mcp.json), Gemini CLI (~/.gemini/settings.json) and most other clients
-{ "mcpServers": { "ordo": { "command": "ordo", "args": ["mcp"] } } }
-```
+`ordo_memory`, `ordo_edit`, `ordo_forget`, `ordo_compact`, `ordo_stats`) and get structured results. Setup is
+in [Connect your agent](#connect-your-agent); add `--no-run` (`ordo mcp --no-run`) to expose read-only tools.
 
 The server keeps the model loaded between calls (`ORDO_KEEP_ALIVE`, default 30m) and runs one tool call at a time.
 
@@ -192,4 +194,4 @@ python -m pytest -q
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Developed by [BaruchLabs](https://baruchlabs.com/).
+MIT, see [LICENSE](https://github.com/devlucascfarias/ordo/blob/main/LICENSE). Developed by [BaruchLabs](https://baruchlabs.com/).

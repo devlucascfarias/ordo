@@ -1,11 +1,36 @@
 [project]
-name = "ordo"
-version = "2.1.0"
-description = "Ordo 3B: Neural Context Filter & Active Episodic Memory for coding agents."
+name = "ordo-harness"
+version = "2.2.0"
+description = "Filters noisy tool output for coding agents with a small local model (Ordo 3B): test runs, builds, linters and large files become compact causal YAML. CLI and MCP server."
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "BaruchLabs" }]
 requires-python = ">=3.10"
 dependencies = ["httpx", "pydantic>=2", "pyyaml", "rich"]
+keywords = ["coding-agents", "mcp", "llm", "context", "context-compression", "ollama", "claude-code", "cursor",
+            "codex", "developer-tools", "test-output", "logs"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Testing",
+  "Topic :: Software Development :: Build Tools",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/devlucascfarias/ordo"
+Source = "https://github.com/devlucascfarias/ordo"
+Issues = "https://github.com/devlucascfarias/ordo/issues"
+Model = "https://huggingface.co/devlucascfarias/ordo-3b"
+BaruchLabs = "https://baruchlabs.com/"
 
 [project.optional-dependencies]
 dev = ["pytest"]
@@ -15,7 +40,7 @@ mcp = ["mcp>=2.3"]
 ordo = "ordo.cli:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]

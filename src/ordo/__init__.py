@@ -1,3 +1,3 @@
-"""Ordo 3B — Neural Context Filter & Active Episodic Memory for coding agents."""
+"""Ordo: filters noisy tool output for coding agents with a small local model (Ordo 3B)."""
 
-__version__ = "2.1.0"
+__version__ = "2.2.0"
