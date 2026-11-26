@@ -46,9 +46,24 @@ causal_trace:
 
 - **Short output** (under ~40 lines) is passed through unchanged; there is nothing to save.
 - **Writing code from scratch**: tasks that run few commands give Ordo nothing to filter.
-- **Agents that already trim command output** see smaller gains; Ordo then mostly adds precision (the cause, not
-  just the tail of the log).
+- **Agents that already trim command output, when the cause is at the start or end of the log.** Some agents keep
+  only the head and tail of long output (Antigravity keeps about 5 KB of each). If the failure is there, the agent
+  already sees it: Ordo still trims some tokens but costs time. It matters most when the cause lands in the part
+  the agent drops, as in monorepo runs where the failing package sits between passing ones.
 - **Slow hardware**: on a modest GPU each condensed call takes several seconds; on CPU only, more.
+
+**Measured** (Gemini 4 Neon through Antigravity, fixing one bug; 2 runs per condition, AMD RX 5700 XT):
+
+| Log | Neon alone | Neon + Ordo |
+|---|---|---|
+| 120-test pytest log, failure at the end | 31k tokens, 45 s | 22k tokens, 67-71 s |
+| 350-test node:test log, failure at the end | 31k tokens, 32 s | 18k tokens, 51-60 s |
+| 8-package Python monorepo, failure in the middle | 38k tokens, 75-97 s | **21k tokens**, 83-92 s |
+| 8-package Node monorepo, failure in the middle | 38k tokens, 41-43 s | 18k / 50k tokens, 55-107 s |
+
+Every run fixed the bug without editing the tests. Ordo cut the agent's tokens by 30-50% in most runs but added
+10-40 s of wall time on this GPU (one condensed call of 6-16 s, plus the agent waiting on it). When the agent
+backgrounds a slow command and polls it, the polling can eat the savings (the 50k run above).
 
 ## Install
 
@@ -126,6 +141,13 @@ Use `--` before the command when it has its own flags that could clash (`ordo ru
 - **Never blocks the agent.** If Ollama is down or the YAML is unrecoverable, the raw output is printed
   (windowed around the errors). Use `--no-fallback` to get exit code 3 instead.
 - **Short output is passed through** without calling the model (≤40 lines); use `--force` to always filter.
+- **Passing suites skip the model.** When a command exits 0 and the runner's own summary reports no failures
+  (pytest, node:test, jest, vitest, go test, cargo test, unittest), `run` answers from that line in well under a
+  second (route `rule`). Any failing block in the output, or a question about warnings, timing, skips or
+  coverage, sends it to the model instead.
+- **Monorepo logs.** Lines like `fail 0` do not count as errors, the window keeps the package header
+  (`rootdir:`, `> pkg:test`) above each failure, and a package-relative path the model cites gets a note with
+  the full path when exactly one file in the tree matches (`# ordo: path: tests/x.test.js is packages/x/...`).
 - **Nothing is lost.** Every `run`/`filter`/`search` saves the full output and prints `raw=<id>` in the header;
   `ordo show <id> --grep "KeyError"` returns the exact original lines when the summary is not enough.
 - **`--json`** on `run`/`filter`/`slice`/`search`/`stats` prints an envelope with the parsed result, exit code,

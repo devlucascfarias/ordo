@@ -29,8 +29,9 @@ _SHELL_META = ("|", "&", ";", ">", "<", "$(", "`")
 INSTRUCTIONS = """Ordo condenses tool output into causal data (status, file, line, symbol, error) with a local model.
 - Use ordo_run for tests, builds and linters whose output may be long; `exit` is the command's own exit code.
   Short output is returned unchanged in `text` (route "bypass").
-- `result` holds the parsed output (route "model"). Route "fallback" means the model was unavailable and
-  `text` is the original output, windowed around errors: read it as a normal log.
+- `result` holds the parsed output (route "model" or "rule"). Route "rule" means a passing test suite was
+  summarized without the model. Route "fallback" means the model was unavailable and `text` is the original
+  output, windowed around errors: read it as a normal log.
 - Warnings starting with "unverified:" mark citations not found in the input; confirm them with ordo_show
   before acting on them.
 - Every run, filter and search returns a raw_id; ordo_show(raw_id, grep=..., lines=...) returns the exact

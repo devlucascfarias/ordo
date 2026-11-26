@@ -244,7 +244,8 @@ def render(rep: dict, memory: dict | None = None) -> str:
             + _memory(memory or {}) +
             '<footer><div class="routes">'
             f'<span>{CHIP}<b>{_n(t["filtered"])}</b> condensed by the model</span>'
-            f'<span>{PASS}<b>{_n(t.get("bypass", 0))}</b> short enough to pass through</span>'
+            + (f'<span>{NOTE}<b>{_n(t["rule"])}</b> passing suite (rule)</span>' if t.get("rule") else "")
+            + f'<span>{PASS}<b>{_n(t.get("bypass", 0))}</b> short enough to pass through</span>'
             f'<span>{ALERT}<b>{_n(t.get("fallback", 0))}</b> fallback</span></div>'
             f"<span>{LOCK}Generated {generated} from local session files. Nothing on this page leaves your machine. "
             "Token counts are estimates.</span>"

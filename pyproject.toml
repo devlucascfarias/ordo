@@ -1,6 +1,6 @@
 [project]
 name = "ordo-harness"
-version = "2.2.0"
+version = "2.3.0"
 description = "Filters noisy tool output for coding agents with a small local model (Ordo 3B): test runs, builds, linters and large files become compact causal YAML. CLI and MCP server."
 readme = "README.md"
 license = "MIT"

@@ -22,6 +22,7 @@ from pathlib import Path
 from . import __version__
 from .client import DEFAULT_BASE_URL, DEFAULT_HOST, DEFAULT_MODEL, call_ordo
 from .contract import GcMode, number_lines
+from .rules import pass_summary
 from .schema import parse_output
 from .session import Session
 from .textproc import clean, est_tokens, shorten_line, window_file, window_log
@@ -43,7 +44,7 @@ class Outcome:
     raw_tokens: int = 0
     out_tokens: int = 0
     seconds: float = 0.0
-    route: str = "model"  # model | bypass | fallback
+    route: str = "model"  # model | rule | bypass | fallback
     windowed: bool = False
     warnings: list[str] = field(default_factory=list)
     data: dict | None = None  # parsed result (for --json)
@@ -91,7 +92,15 @@ def run_model(args, mode: GcMode, intent: str, raw: str, *, source_lines: list[s
         repaired = parsed.repaired
         parsed = parse_output(_normalized(data), mode)
         parsed.repaired = repaired
-    text = res.text.strip() if parsed.raw_yaml_ok and not repeats else _normalized(parsed.data)
+    noise = data.get("dropped_noise")
+    if mode is GcMode.TOOL_OUTPUT and isinstance(noise, str) and re.search(r"fail|error|exception", noise, re.I):
+        # a failure is never noise: on monorepo logs the model sometimes invents "an unrelated failure in <pkg>"
+        data = {k: v for k, v in data.items() if k != "dropped_noise"}
+        parsed.data = data
+        repeats = repeats or []
+        text = _normalized(data)
+    else:
+        text = res.text.strip() if parsed.raw_yaml_ok and not repeats else _normalized(parsed.data)
     out = Outcome(text=text, raw_tokens=raw_tokens, out_tokens=res.output_tokens, seconds=res.seconds,
                   data=parsed.data)
     out.warnings += repeats
@@ -110,11 +119,51 @@ def run_model(args, mode: GcMode, intent: str, raw: str, *, source_lines: list[s
                     "symbol": "symbol not in cited lines", "rule": "rule broken",
                     "summary": "summary cites a location not in input"}[c.kind]
             out.warnings.append(f"unverified: {what}: {c.target}" + (f" ({c.detail})" if c.detail else ""))
+    if mode is GcMode.TOOL_OUTPUT:
+        out.warnings += resolve_paths(parsed.data, getattr(args, "cwd", None) or os.getcwd())
     seen: set[str] = set()
     out.warnings = [w for w in out.warnings if not (w in seen or seen.add(w))]
     if out.warnings:
         out.text += "\n" + "\n".join(f"# ordo: {w}" for w in out.warnings)
     return out
+
+
+_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", "target", ".tox", ".next"}
+
+
+def resolve_paths(data: dict, cwd: str, *, max_files: int = 20000) -> list[str]:
+    """Monorepo runners print paths relative to the package (`tests/x.test.js`), not to where the agent stands.
+
+    For each cited file that does not exist from `cwd`, name the only file in the tree that ends with that path.
+    Nothing is rewritten: the note goes next to the output, and ambiguous or missing paths are left alone.
+    """
+    cited = []
+    for item in data.get("causal_trace") or []:
+        f = item.get("file") if isinstance(item, dict) else None
+        if isinstance(f, str) and f.strip() and f not in cited:
+            cited.append(f.strip())
+    root = Path(cwd)
+    wanted = {}
+    for f in cited:
+        rel = f.replace("\\", "/").lstrip("./")
+        if not rel or Path(f).is_absolute() or (root / rel).exists() or "/" not in rel and "." not in rel:
+            continue
+        wanted[f] = "/" + rel
+    if not wanted:
+        return []
+    found: dict[str, list[str]] = {f: [] for f in wanted}
+    seen = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for name in filenames:
+            seen += 1
+            full = "/" + Path(dirpath, name).relative_to(root).as_posix()
+            for f, tail in wanted.items():
+                if full.endswith(tail):
+                    found[f].append(full[1:])
+        if seen > max_files:
+            return []
+    return [f"path: {f} is {hits[0]} from the working directory" for f, hits in found.items() if len(hits) == 1]
 
 
 def _collapse_repeats(data: dict) -> tuple[dict, list[str]]:
@@ -156,6 +205,8 @@ def _header(label: str, out: Outcome, extra: str = "") -> str:
         parts.append(f"~{out.raw_tokens} -> {out.out_tokens} tokens, {out.seconds:.1f}s")
     elif out.route == "bypass":
         parts.append("short output, passed through")
+    elif out.route == "rule":
+        parts.append(f"~{out.raw_tokens} -> {out.out_tokens} tokens, passing suite (rule, no model)")
     return " | ".join(parts)
 
 
@@ -221,11 +272,12 @@ def emit(args, label: str, out: Outcome, extra: str = "", *, code: int | None = 
          **fields) -> None:
     """Single output path for every command: YAML with a header (default) or a JSON envelope (--json)."""
     if getattr(args, "json", False):
+        structured = out.route in ("model", "rule")
         env = {"command": label, "route": out.route, "status": out.status, "exit": code, "raw_id": raw_id,
                "tokens": {"input": out.raw_tokens, "output": out.out_tokens}, "seconds": round(out.seconds, 2),
                "warnings": out.warnings, **fields,
-               "result": out.data if out.route == "model" else None,
-               "text": None if out.route == "model" else out.text}
+               "result": out.data if structured else None,
+               "text": None if structured else out.text}
         _print(json.dumps(env, ensure_ascii=False, indent=1))
         return
     head = _header(label, out, extra)
@@ -360,7 +412,16 @@ def cmd_run(args) -> int:
     elapsed = time.time() - t0
     text = clean(output)
     intent = args.intent or f"Report the outcome of `{' '.join(cmd)}`"
-    out = _filter_or_bypass(args, GcMode.TOOL_OUTPUT, intent, text)
+    tokens = est_tokens(text)
+    long_enough = len(text.splitlines()) > BYPASS_LINES or tokens > BYPASS_TOKENS
+    rule_summary = pass_summary(text, code, args.intent or "") if (not args.force and long_enough) else None
+    if rule_summary is not None:
+        data = {"status": "PASS", "summary": rule_summary}
+        yaml_text = _normalized(data)
+        out = Outcome(text=yaml_text, status="PASS", summary=rule_summary, raw_tokens=tokens,
+                      out_tokens=est_tokens(yaml_text), seconds=0.0, route="rule", data=data)
+    else:
+        out = _filter_or_bypass(args, GcMode.TOOL_OUTPUT, intent, text)
     if out.status is None:  # short output or fallback: status comes from the exit code
         out.status = "PASS" if code == 0 else "FAIL"
     elif out.route == "model" and (code == 0) != (out.status in ("PASS", "WARN")):
@@ -871,7 +932,7 @@ def savings_report(home: Path) -> dict:
     """Token savings over every recorded session: totals, per tool and per project."""
     tools: dict[str, dict] = {}
     projects: dict[str, dict] = {}
-    total = {"calls": 0, "raw": 0, "sent": 0, "filtered": 0, "model_seconds": 0.0, "bypass": 0, "fallback": 0}
+    total = {"calls": 0, "raw": 0, "sent": 0, "filtered": 0, "model_seconds": 0.0, "rule": 0, "bypass": 0, "fallback": 0}
     first_ts = None
     for path in sorted((home / "sessions").glob("*.jsonl")):
         sess = Session(path=path, root=Path("."))
@@ -880,7 +941,8 @@ def savings_report(home: Path) -> dict:
             if ev["kind"] not in ("run", "filter", "slice", "search") or "raw_tokens" not in ev:
                 continue
             raw, sent = int(ev.get("raw_tokens") or 0), int(ev.get("out_tokens") or 0)
-            filtered = ev.get("route") == "model"
+            route = ev.get("route")
+            filtered = route in ("model", "rule")
             first_ts = min(first_ts or ev["ts"], ev["ts"])
             for row in (tools.setdefault(tool_name(ev), {"calls": 0, "raw": 0, "sent": 0, "filtered": 0}),
                         projects.setdefault(project, {"calls": 0, "raw": 0, "sent": 0, "filtered": 0}), total):
@@ -888,9 +950,9 @@ def savings_report(home: Path) -> dict:
                 row["raw"] += raw
                 row["sent"] += sent
                 row["filtered"] += filtered
-            total["model_seconds"] += float(ev.get("seconds") or 0) if filtered else 0.0
-            if ev.get("route") in ("bypass", "fallback"):
-                total[ev["route"]] += 1
+            total["model_seconds"] += float(ev.get("seconds") or 0) if route == "model" else 0.0
+            if route in ("rule", "bypass", "fallback"):
+                total[route] += 1
             projects[project]["last"] = max(projects[project].get("last", 0), ev["ts"])
     for row in [*tools.values(), *projects.values(), total]:
         row["saved"] = row["raw"] - row["sent"]
@@ -1045,15 +1107,17 @@ def cmd_stats(args) -> int:
     for ev in args.session_obj.events():
         if "raw_tokens" not in ev:
             continue
-        r = rows.setdefault(ev["kind"], {"calls": 0, "raw": 0, "out": 0, "secs": 0.0, "model": 0, "bypass": 0,
+        r = rows.setdefault(ev["kind"], {"calls": 0, "raw": 0, "out": 0, "secs": 0.0, "model": 0, "rule": 0, "bypass": 0,
                                          "fallback": 0, "warned": 0})
         r["calls"] += 1
         r["raw"] += ev.get("raw_tokens", 0)
         r["out"] += ev.get("out_tokens", 0)
         r["secs"] += ev.get("seconds", 0.0)
-        r[ev.get("route", "model")] += 1
+        route = ev.get("route", "model")
+        if route in r:
+            r[route] += 1
         r["warned"] += 1 if ev.get("warnings") else 0
-    total = {k: sum(r[k] for r in rows.values()) for k in ("calls", "raw", "out", "secs", "model", "bypass", "fallback", "warned")}
+    total = {k: sum(r[k] for r in rows.values()) for k in ("calls", "raw", "out", "secs", "model", "rule", "bypass", "fallback", "warned")}
     if args.json:
         _print(json.dumps({"session": str(args.session_obj.path), "by_command": rows, "total": total}, indent=2))
         return 0
@@ -1061,14 +1125,14 @@ def cmd_stats(args) -> int:
     from rich.table import Table
 
     t = Table(title=f"ordo stats: {args.session_obj.path.name}", caption="in = estimated tokens of raw output; "
-              "routes = model/bypass/fallback")
+              "routes = model/rule/bypass/fallback")
     for col in ("command", "calls", "in", "out", "saved", "routes", "warned", "time"):
         t.add_column(col, justify="right" if col != "command" else "left", no_wrap=True)
     for name, r in sorted(rows.items()) + [("TOTAL", total)]:
         saved = r["raw"] - r["out"]
         pct = f" ({saved / r['raw']:.0%})" if r["raw"] else ""
         t.add_row(name, str(r["calls"]), f"{r['raw']:,}", f"{r['out']:,}", f"{saved:,}{pct}",
-                  f"{r['model']}/{r['bypass']}/{r['fallback']}", str(r["warned"]), f"{r['secs']:.0f}s")
+                  f"{r['model']}/{r['rule']}/{r['bypass']}/{r['fallback']}", str(r["warned"]), f"{r['secs']:.0f}s")
     Console(width=max(Console().width, 100)).print(t)
     if not rows:
         _print("no calls recorded yet in this session")
@@ -1125,18 +1189,10 @@ def cmd_show(args) -> int:
 # what an agent needs on every turn (agents resend AGENTS.md with each step, so every line here is paid many times)
 GUIDE_SHORT = """## Ordo: tool-output filter
 
-Run verbose commands (tests, builds, linters) through `ordo run -i "<what you need to know>" -- <command>`:
-it prints a short YAML (status, summary, file and line, snippets) instead of the full log. Run short commands
-directly.
-
-- `ordo show <raw_id> --grep "<regex>"` (or `--lines A-B`) prints exact original lines; use it instead of
-  re-running the command.
-- `# ordo: unverified: ...` marks a citation not found in the output: confirm it with `ordo show` first.
-- If ordo says it is showing raw output, read the body as a normal log.
-- Memory across sessions: `ordo note "<fact>"`, `ordo dead-end "<attempt>" "<why it failed>"`,
-  `ordo compact -i "<goal>"` to read it back; `ordo memory`, `ordo edit`, `ordo forget` to keep it true.
-
-`ordo guide --full` lists every command and the output contract.
+Run tests, builds and linters as `ordo run -i "<what you need to know>" -- <command>`: you get a short YAML
+(status, summary, file:line) instead of the log. `ordo show <raw_id> --grep "<regex>"` prints exact original
+lines: use it for anything marked `# ordo: unverified`, instead of re-running the command.
+More (memory, slice, search): `ordo guide --full`.
 """
 
 GUIDE = """## Ordo: tool-output filter for this repository
@@ -1172,6 +1228,8 @@ output is always kept and can be read back verbatim.
   `causal_trace` (file, lines, symbol, issue), `exact_snippets`, `dropped_noise`. `slice` returns
   `relevant_symbols` with 1-based line ranges.
 - `short output, passed through` in the header: output under ~40 lines is printed unchanged.
+- `passing suite (rule, no model)` in the header: the command exited 0 and the test runner's own summary
+  reported no failures, so the summary comes from that line without the model.
 - `# ordo: unverified: ...` comments mark citations the grounding check could not find in the input.
   Do not act on them before confirming with `ordo show <raw_id>`.
 - `# ordo: ... showing raw output`: the model was unavailable or returned invalid YAML; the body is the
@@ -1179,8 +1237,8 @@ output is always kept and can be read back verbatim.
   If it keeps happening, ask the user to run `ordo setup`, which diagnoses the model server.
 - Exit codes: `run` returns the command's own exit code (127 not found, 124 timeout); 2 is a usage error;
   `search` returns 1 when nothing matches.
-- `--json` on run, filter, slice, search and stats prints an envelope: `command`, `route` (model, bypass,
-  fallback), `status`, `exit`, `raw_id`, `tokens`, `warnings`, and `result` (model route) or `text`.
+- `--json` on run, filter, slice, search and stats prints an envelope: `command`, `route` (model, rule, bypass,
+  fallback), `status`, `exit`, `raw_id`, `tokens`, `warnings`, and `result` (model and rule routes) or `text`.
 
 ### Working rules
 
@@ -1446,6 +1504,7 @@ output
   '# ordo: ...' lines are warnings; '# ordo: unverified: ...' marks citations not found in the input.
   the header ends with raw=<id>: 'ordo show <id>' prints the full original output (nothing is lost).
   short output (<=40 lines) is passed through; if the model is down, the raw output is printed.
+  route 'rule' means a passing test suite was summarized without the model.
   --json (run, filter, slice, search, stats) prints a machine-readable envelope with result and raw_id.
 
 exit codes

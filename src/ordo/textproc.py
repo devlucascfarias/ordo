@@ -5,6 +5,7 @@ The model was trained on short inputs; this makes sure nothing silently exceeds 
 """
 from __future__ import annotations
 
+import bisect
 import re
 
 from .contract import number_lines
@@ -15,6 +16,17 @@ ERROR_HINT = re.compile(
     r"not found|missing|invalid|warning|E\d{3,4}\b|TS\d{4}|\bat .+:\d+|-->|^\s*E\s",
     re.IGNORECASE,
 )
+# "fail 0", "0 failed", "errors: 0": a runner reporting that nothing failed is not an error line
+ZERO_COUNT = re.compile(
+    r"\b(?:fail(?:ed|ures?)?|errors?|cancelled)\b\s*[:=]?\s*0\b(?![.\d])|\b0\s+(?:failed|failures?|errors?)\b",
+    re.IGNORECASE,
+)
+# start of a package or workspace block in a monorepo log: relative paths below it are relative to that package
+SECTION_HINT = re.compile(r"^(?:rootdir:\s|> [@\w][\w@/.-]*[\s:]|\S+:test:?\s*$)")
+
+
+def is_error_line(line: str) -> bool:
+    return bool(ERROR_HINT.search(ZERO_COUNT.sub("", line)))
 
 
 def clean(text: str) -> str:
@@ -87,12 +99,20 @@ def window_log(text: str, budget: int, *, head: int = 30, tail: int = 60, ctx: i
     max_chars = max(int(budget * 3.5 / 8), 200)  # no single line takes more than 1/8 of the budget
     lines = [shorten_line(l, max_chars) for l in text.split("\n")]
     n = len(lines)
-    errs = [i for i, l in enumerate(lines) if ERROR_HINT.search(l)]
-    around = lambda i: (max(i - ctx, 0), min(i + ctx, n - 1))  # noqa: E731
+    errs = [i for i, l in enumerate(lines) if is_error_line(l)]
+    sections = [i for i, l in enumerate(lines) if SECTION_HINT.match(l)]
+
+    def around(i: int) -> list[tuple[int, int]]:
+        spans = [(max(i - ctx, 0), min(i + ctx, n - 1))]
+        k = bisect.bisect_right(sections, i) - 1  # the section header the error belongs to (package, workspace)
+        if k >= 0 and sections[k] < i - ctx:
+            spans.append((sections[k], sections[k]))
+        return spans
+
     # priority: first error, last error, short tail (summary), short head, remaining errors from last to first
-    spans = [around(i) for i in (errs[:1] + errs[-1:])]
+    spans = [s for i in errs[:1] + errs[-1:] for s in around(i)]
     spans += [(max(n - min(tail, 20), 0), n - 1), (0, min(head // 3, n) - 1)]
-    spans += [around(i) for i in errs[1:3] + errs[::-1]]
+    spans += [s for i in errs[1:3] + errs[::-1] for s in around(i)]
     spans += [(max(n - tail, 0), n - 1), (0, min(head, n) - 1)]
     return _render(lines, _fit(lines, spans, budget), numbered=False), True
 
