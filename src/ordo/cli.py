@@ -22,10 +22,11 @@ from pathlib import Path
 from . import __version__
 from .client import DEFAULT_BASE_URL, DEFAULT_HOST, DEFAULT_MODEL, call_ordo
 from .contract import GcMode, number_lines
-from .rules import pass_summary
+from .analyze import analyze, cause_files, confident, error_keys, findings, to_result
+from .rules import _SPECIFIC_INTENT, pass_summary
 from .schema import parse_output
 from .session import Session
-from .textproc import clean, est_tokens, shorten_line, window_file, window_log
+from .textproc import clean, error_index, est_tokens, shorten_line, window_file, window_log
 from .verify import verify
 
 # prefill dominates local latency and grows faster than linearly (6.4k tokens: 62 s, 2.9k: 13 s on a mid GPU);
@@ -44,15 +45,16 @@ class Outcome:
     raw_tokens: int = 0
     out_tokens: int = 0
     seconds: float = 0.0
-    route: str = "model"  # model | rule | bypass | fallback
+    route: str = "model"  # model | index | rule | bypass | fallback
     windowed: bool = False
     warnings: list[str] = field(default_factory=list)
     data: dict | None = None  # parsed result (for --json)
+    meta: dict = field(default_factory=dict)  # stored with the session event (failure keys, cause files)
 
     def event(self) -> dict:
         return {"status": self.status, "summary": self.summary, "raw_tokens": self.raw_tokens,
                 "out_tokens": self.out_tokens, "seconds": round(self.seconds, 2), "route": self.route,
-                "warnings": len(self.warnings)}
+                "warnings": len(self.warnings), **self.meta}
 
 
 _SINK: ContextVar = ContextVar("ordo_sink", default=None)  # output destination when called by the MCP server
@@ -128,7 +130,40 @@ def run_model(args, mode: GcMode, intent: str, raw: str, *, source_lines: list[s
     return out
 
 
-_SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", "target", ".tox", ".next"}
+_LOCATION = re.compile(r"([\w.\-]+\.[A-Za-z]{1,5})[(:](\d+)")
+_MESSAGE = re.compile(r"^.*?(?:error TS\d{4}|ERROR: \d+:\d+|Error|error(?:\[E\d+\])?|FAILED)\s*:\s*")
+
+
+def uncovered_errors(text: str, model_text: str, limit: int = 6) -> list[str]:
+    """Distinct error lines of the full output that the model's answer does not mention.
+
+    The model tends to report one failure; a log with a shader error and five failing tests needs all of them.
+    A line counts as covered when its file:line or the start of its message is already in the answer.
+    """
+    said = model_text.replace("\\", "/").lower()
+    out = []
+    for line in error_index(text, limit=40):
+        loc = _LOCATION.search(line.replace("\\", "/"))
+        if loc and f"{loc.group(1).lower()}:{loc.group(2)}" in said:
+            continue
+        msg = _MESSAGE.sub("", line).strip().lower()[:40]
+        if msg and msg in said:
+            continue
+        out.append(line)
+    out.sort(key=_cause_rank)  # stable: causes (compiler, browser console) before symptoms (failed tests)
+    if len(out) > limit:
+        out = out[:limit] + [f"... {len(out) - limit} more (ordo show <raw_id> --grep ...)"]
+    return out
+
+
+def _cause_rank(line: str) -> int:
+    if re.match(r"(?:\[browser:error\]\s*)?ERROR: \d+:\d+|\S+\(\d+,\d+\): error|\S+:\d+:\d+ - error|\s*error", line):
+        return 0
+    if line.startswith("[browser:error]"):
+        return 1
+    if re.match(r"\s*Error: ", line):
+        return 2
+    return 3
 
 
 def resolve_paths(data: dict, cwd: str, *, max_files: int = 20000) -> list[str]:
@@ -207,6 +242,8 @@ def _header(label: str, out: Outcome, extra: str = "") -> str:
         parts.append("short output, passed through")
     elif out.route == "rule":
         parts.append(f"~{out.raw_tokens} -> {out.out_tokens} tokens, passing suite (rule, no model)")
+    elif out.route == "index":
+        parts.append(f"~{out.raw_tokens} -> {out.out_tokens} tokens, failures indexed (no model, {out.seconds:.2f}s)")
     return " | ".join(parts)
 
 
@@ -272,7 +309,7 @@ def emit(args, label: str, out: Outcome, extra: str = "", *, code: int | None = 
          **fields) -> None:
     """Single output path for every command: YAML with a header (default) or a JSON envelope (--json)."""
     if getattr(args, "json", False):
-        structured = out.route in ("model", "rule")
+        structured = out.route in ("model", "rule", "index")
         env = {"command": label, "route": out.route, "status": out.status, "exit": code, "raw_id": raw_id,
                "tokens": {"input": out.raw_tokens, "output": out.out_tokens}, "seconds": round(out.seconds, 2),
                "warnings": out.warnings, **fields,
@@ -286,16 +323,44 @@ def emit(args, label: str, out: Outcome, extra: str = "", *, code: int | None = 
     _print(head + "\n" + out.text)
 
 
-def _filter_or_bypass(args, mode: GcMode, intent: str, text: str) -> Outcome:
+def _index(args, intent: str, text: str, command: str | None, code: int | None) -> Outcome | None:
+    """Route "index": the failures read deterministically, no model. None when the model is needed."""
+    if getattr(args, "deep", False) or args.force or _SPECIFIC_INTENT.search(intent or ""):
+        return None
+    t0 = time.time()
+    cwd = getattr(args, "cwd", None) or os.getcwd()
+    try:
+        result = analyze(text, command, cwd, intent)
+    except Exception:  # noqa: BLE001 - the model path is always there
+        return None
+    if not confident(result, intent):
+        return None  # the model answers; the failures it leaves out are still listed after its answer
+    data = to_result(result, code)
+    body = _normalized(data)
+    out = Outcome(text=body, status=data["status"], summary=data["summary"], raw_tokens=est_tokens(text),
+                  out_tokens=est_tokens(body), seconds=time.time() - t0, route="index", data=data)
+    out.meta = {"errors": error_keys(result)[:40], "cause_files": cause_files(result)}
+    return out
+
+
+def _filter_or_bypass(args, mode: GcMode, intent: str, text: str, *, command: str | None = None,
+                      code: int | None = None) -> Outcome:
     tokens = est_tokens(text)
     if not args.force and len(text.splitlines()) <= BYPASS_LINES and tokens <= BYPASS_TOKENS:
         return Outcome(text=text, raw_tokens=tokens, out_tokens=tokens, route="bypass")
+    if mode is GcMode.TOOL_OUTPUT:
+        indexed = _index(args, intent, text, command, code)
+        if indexed is not None:
+            return indexed
     lines = text.split("\n")
     long_lines = sum(len(l) > LONG_LINE for l in lines)
     if long_lines and mode is not GcMode.CODE_SLICE:  # dumps, minified code, overload lists: noise for the model
         text = "\n".join(shorten_line(l, LONG_LINE) for l in lines)
     body, cut = window_log(text, args.budget)
     out = run_model(args, mode, intent, body, raw_tokens=tokens)
+    if out.route == "model" and mode is GcMode.TOOL_OUTPUT:
+        out.warnings += [f"also in the output: {l}" for l in uncovered_errors(text, out.text)]
+        out.text += "".join(f"\n# ordo: {w}" for w in out.warnings if w.startswith("also in the output: "))
     notes = []
     if cut and out.route == "model":
         notes.append(f"input exceeded ~{args.budget} tokens and was windowed before the model")
@@ -421,7 +486,9 @@ def cmd_run(args) -> int:
         out = Outcome(text=yaml_text, status="PASS", summary=rule_summary, raw_tokens=tokens,
                       out_tokens=est_tokens(yaml_text), seconds=0.0, route="rule", data=data)
     else:
-        out = _filter_or_bypass(args, GcMode.TOOL_OUTPUT, intent, text)
+        out = _filter_or_bypass(args, GcMode.TOOL_OUTPUT, intent, text, command=" ".join(cmd), code=code)
+    if "errors" not in out.meta:
+        out.meta["errors"] = [f.key[:200] for f in findings(text, Path(getattr(args, "cwd", None) or os.getcwd()))][:40]
     if out.status is None:  # short output or fallback: status comes from the exit code
         out.status = "PASS" if code == 0 else "FAIL"
     elif out.route == "model" and (code == 0) != (out.status in ("PASS", "WARN")):
@@ -430,6 +497,10 @@ def cmd_run(args) -> int:
                 "check the original with `ordo show`")
         out.warnings.append(note)
         out.text += f"\n# ordo: {note}"
+    for note in since_last_run(args.session_obj, " ".join(cmd), out.meta, getattr(args, "cwd", None) or os.getcwd()):
+        out.warnings.append(note)
+        if not getattr(args, "json", False):
+            out.text += f"\n# ordo: {note}"
     rid = save_raw(text, args.session_obj)
     emit(args, "run", out, f"exit={code}", code=code, raw_id=rid)
     args.session_obj.append("run", command=" ".join(cmd), exit=code, intent=intent, cmd_seconds=round(elapsed, 2),
@@ -504,6 +575,93 @@ def _display_path(path: Path, root: Path, given: str) -> str:
 
 
 _SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", "target", ".next", ".ordo"}
+
+
+def _previous_run(session: Session, command: str, before: float | None = None) -> dict | None:
+    prev = None
+    for ev in session.events():
+        if ev.get("kind") == "run" and ev.get("command") == command and "errors" in ev:
+            if before is None or ev["ts"] < before:
+                prev = ev
+    return prev
+
+
+def compare_runs(old_errors: list[str], new_errors: list[str]) -> dict:
+    old, new = list(dict.fromkeys(old_errors)), list(dict.fromkeys(new_errors))
+    return {"gone": [e for e in old if e not in new], "new": [e for e in new if e not in old],
+            "still": [e for e in new if e in old]}
+
+
+def untouched_causes(gone: list[str], cause_map: dict, since: float, cwd: str) -> list[str]:
+    """Failures that disappeared although none of the files they pointed to changed: maybe a symptom fix."""
+    out = []
+    for key in gone:
+        files = cause_map.get(key) or []
+        if not files:
+            continue
+        changed = False
+        for f in files:
+            try:
+                changed |= (Path(cwd) / f).stat().st_mtime > since
+            except OSError:
+                changed = True  # renamed or deleted: it was touched
+        if not changed:
+            out.append(f"'{key[:120]}' is gone, but none of the files it pointed to changed ({', '.join(files[:4])}): "
+                       "check that the fix addresses the cause, not only the symptom")
+    return out
+
+
+def since_last_run(session: Session, command: str, meta: dict, cwd: str) -> list[str]:
+    prev = _previous_run(session, command)
+    if prev is None:
+        return []
+    d = compare_runs(prev.get("errors") or [], meta.get("errors") or [])
+    if not (d["gone"] or d["new"] or d["still"]):
+        return []
+    notes = [f"since the last run of this command (raw={prev.get('raw_id')}): {len(d['gone'])} failure(s) gone, "
+             f"{len(d['new'])} new, {len(d['still'])} still failing" + (" (ordo diff for the list)" if d["gone"] or d["new"] else "")]
+    notes += untouched_causes(d["gone"], prev.get("cause_files") or {}, prev["ts"], cwd)
+    return notes
+
+
+def cmd_diff(args) -> int:
+    """Failures gone, new and still there between two saved outputs (default: the last two runs of a command)."""
+    runs = [ev for ev in args.session_obj.events() if ev.get("kind") == "run" and ev.get("raw_id")]
+    by_id = {ev["raw_id"]: ev for ev in runs}
+    if args.new:
+        new_ev = by_id.get(args.new) or {"raw_id": args.new}
+    elif runs:
+        new_ev = runs[-1]
+    else:
+        print("ordo diff: no saved runs in this session", file=sys.stderr)
+        return 2
+    if args.old:
+        old_ev = by_id.get(args.old) or {"raw_id": args.old}
+    else:
+        old_ev = _previous_run(args.session_obj, new_ev.get("command", ""), new_ev.get("ts")) if new_ev.get("command") else None
+        if old_ev is None:
+            earlier = [ev for ev in runs if ev["raw_id"] != new_ev["raw_id"] and ev["ts"] < new_ev.get("ts", 1e18)]
+            old_ev = earlier[-1] if earlier else None
+    if old_ev is None:
+        print("ordo diff: need two saved runs (or pass two raw ids)", file=sys.stderr)
+        return 2
+    cwd = getattr(args, "cwd", None) or os.getcwd()
+    keys = []
+    for ev in (old_ev, new_ev):
+        path, _ = find_raw(args.session_obj, ev["raw_id"])
+        if path is None:
+            print(f"ordo diff: output {ev['raw_id']} not found", file=sys.stderr)
+            return 2
+        keys.append([f.key[:200] for f in findings(path.read_text(encoding="utf-8"), Path(cwd))])
+    d = compare_runs(*keys)
+    data = {"old_raw_id": old_ev["raw_id"], "new_raw_id": new_ev["raw_id"], **{k: v[:30] for k, v in d.items()}}
+    warn = untouched_causes(d["gone"], old_ev.get("cause_files") or {}, old_ev.get("ts", 0), cwd)
+    if args.json:
+        _print(json.dumps({"command": "diff", **data, "warnings": warn}, ensure_ascii=False, indent=1))
+    else:
+        _print(f"# ordo diff | {len(d['gone'])} gone, {len(d['new'])} new, {len(d['still'])} still\n" + _normalized(data)
+               + "".join(f"\n# ordo: {w}" for w in warn))
+    return 0
 
 
 def _py_search(rx: re.Pattern, paths: list[str], context: int, limit: int = 400) -> str:
@@ -932,7 +1090,8 @@ def savings_report(home: Path) -> dict:
     """Token savings over every recorded session: totals, per tool and per project."""
     tools: dict[str, dict] = {}
     projects: dict[str, dict] = {}
-    total = {"calls": 0, "raw": 0, "sent": 0, "filtered": 0, "model_seconds": 0.0, "rule": 0, "bypass": 0, "fallback": 0}
+    total = {"calls": 0, "raw": 0, "sent": 0, "filtered": 0, "model_seconds": 0.0, "index": 0, "rule": 0, "bypass": 0,
+             "fallback": 0}
     first_ts = None
     for path in sorted((home / "sessions").glob("*.jsonl")):
         sess = Session(path=path, root=Path("."))
@@ -942,7 +1101,7 @@ def savings_report(home: Path) -> dict:
                 continue
             raw, sent = int(ev.get("raw_tokens") or 0), int(ev.get("out_tokens") or 0)
             route = ev.get("route")
-            filtered = route in ("model", "rule")
+            filtered = route in ("model", "rule", "index")
             first_ts = min(first_ts or ev["ts"], ev["ts"])
             for row in (tools.setdefault(tool_name(ev), {"calls": 0, "raw": 0, "sent": 0, "filtered": 0}),
                         projects.setdefault(project, {"calls": 0, "raw": 0, "sent": 0, "filtered": 0}), total):
@@ -951,7 +1110,7 @@ def savings_report(home: Path) -> dict:
                 row["sent"] += sent
                 row["filtered"] += filtered
             total["model_seconds"] += float(ev.get("seconds") or 0) if route == "model" else 0.0
-            if route in ("rule", "bypass", "fallback"):
+            if route in ("index", "rule", "bypass", "fallback"):
                 total[route] += 1
             projects[project]["last"] = max(projects[project].get("last", 0), ev["ts"])
     for row in [*tools.values(), *projects.values(), total]:
@@ -1107,7 +1266,7 @@ def cmd_stats(args) -> int:
     for ev in args.session_obj.events():
         if "raw_tokens" not in ev:
             continue
-        r = rows.setdefault(ev["kind"], {"calls": 0, "raw": 0, "out": 0, "secs": 0.0, "model": 0, "rule": 0, "bypass": 0,
+        r = rows.setdefault(ev["kind"], {"calls": 0, "raw": 0, "out": 0, "secs": 0.0, "model": 0, "index": 0, "rule": 0, "bypass": 0,
                                          "fallback": 0, "warned": 0})
         r["calls"] += 1
         r["raw"] += ev.get("raw_tokens", 0)
@@ -1117,7 +1276,7 @@ def cmd_stats(args) -> int:
         if route in r:
             r[route] += 1
         r["warned"] += 1 if ev.get("warnings") else 0
-    total = {k: sum(r[k] for r in rows.values()) for k in ("calls", "raw", "out", "secs", "model", "rule", "bypass", "fallback", "warned")}
+    total = {k: sum(r[k] for r in rows.values()) for k in ("calls", "raw", "out", "secs", "model", "index", "rule", "bypass", "fallback", "warned")}
     if args.json:
         _print(json.dumps({"session": str(args.session_obj.path), "by_command": rows, "total": total}, indent=2))
         return 0
@@ -1125,14 +1284,14 @@ def cmd_stats(args) -> int:
     from rich.table import Table
 
     t = Table(title=f"ordo stats: {args.session_obj.path.name}", caption="in = estimated tokens of raw output; "
-              "routes = model/rule/bypass/fallback")
+              "routes = model/index/rule/bypass/fallback")
     for col in ("command", "calls", "in", "out", "saved", "routes", "warned", "time"):
         t.add_column(col, justify="right" if col != "command" else "left", no_wrap=True)
     for name, r in sorted(rows.items()) + [("TOTAL", total)]:
         saved = r["raw"] - r["out"]
         pct = f" ({saved / r['raw']:.0%})" if r["raw"] else ""
         t.add_row(name, str(r["calls"]), f"{r['raw']:,}", f"{r['out']:,}", f"{saved:,}{pct}",
-                  f"{r['model']}/{r['rule']}/{r['bypass']}/{r['fallback']}", str(r["warned"]), f"{r['secs']:.0f}s")
+                  f"{r['model']}/{r['index']}/{r['rule']}/{r['bypass']}/{r['fallback']}", str(r["warned"]), f"{r['secs']:.0f}s")
     Console(width=max(Console().width, 100)).print(t)
     if not rows:
         _print("no calls recorded yet in this session")
@@ -1190,9 +1349,9 @@ def cmd_show(args) -> int:
 GUIDE_SHORT = """## Ordo: tool-output filter
 
 Run tests, builds and linters as `ordo run -i "<what you need to know>" -- <command>`: you get a short YAML
-(status, summary, file:line) instead of the log. `ordo show <raw_id> --grep "<regex>"` prints exact original
-lines: use it for anything marked `# ordo: unverified`, instead of re-running the command.
-More (memory, slice, search): `ordo guide --full`.
+(status, causes with file:line and links to the source, failing tests) instead of the log, and what changed
+since the last run. `ordo show <raw_id> --grep "<regex>"` prints exact original lines; `ordo diff` compares runs.
+More (memory, slice, search, --deep): `ordo guide --full`.
 """
 
 GUIDE = """## Ordo: tool-output filter for this repository
@@ -1228,6 +1387,12 @@ output is always kept and can be read back verbatim.
   `causal_trace` (file, lines, symbol, issue), `exact_snippets`, `dropped_noise`. `slice` returns
   `relevant_symbols` with 1-based line ranges.
 - `short output, passed through` in the header: output under ~40 lines is printed unchanged.
+- `failures indexed (no model)` in the header: the failures were read deterministically: `causes` (each with
+  `at`, `called_from`, `detail` and `links` to the source: definitions, declarations, the switch that enables a
+  feature, the closest existing file), then `failing_tests`, then `other_failures` (outside the question).
+  Pass `--deep` when you need the model's reading instead.
+- `# ordo: since the last run of this command: ...` compares with the previous run; a failure that disappeared
+  although none of its files changed is flagged as a possible symptom fix. `ordo diff` lists them.
 - `passing suite (rule, no model)` in the header: the command exited 0 and the test runner's own summary
   reported no failures, so the summary comes from that line without the model.
 - `# ordo: unverified: ...` comments mark citations the grounding check could not find in the input.
@@ -1504,7 +1669,9 @@ output
   '# ordo: ...' lines are warnings; '# ordo: unverified: ...' marks citations not found in the input.
   the header ends with raw=<id>: 'ordo show <id>' prints the full original output (nothing is lost).
   short output (<=40 lines) is passed through; if the model is down, the raw output is printed.
-  route 'rule' means a passing test suite was summarized without the model.
+  route 'rule' means a passing test suite was summarized without the model; route 'index' means the
+  failures were read deterministically (causes, links to the source, failing tests); --deep asks the model.
+  'ordo diff' compares the last two runs of a command.
   --json (run, filter, slice, search, stats) prints a machine-readable envelope with result and raw_id.
 
 exit codes
@@ -1659,6 +1826,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--timeout", type=float, default=300.0, help="model timeout in seconds")
     g.add_argument("--no-fallback", action="store_true", help="exit 3 instead of printing raw output")
     g.add_argument("--force", action="store_true", help="always call the model, even for short outputs")
+    g.add_argument("--deep", action="store_true",
+                   help="ask the model even when the failures are recognized without it (route index)")
     g.add_argument("--json", action="store_true", help="machine-readable JSON envelope instead of YAML")
 
     p = _Parser(prog="ordo", add_help=True)
@@ -1669,7 +1838,7 @@ def build_parser() -> argparse.ArgumentParser:
     usages = {"run": "-i INTENT [--cmd-timeout S] -- CMD...", "filter": "-i INTENT [--mode MODE] [FILE]",
               "slice": "-i INTENT FILE", "search": "-i INTENT [-C N] PATTERN [PATH...]",
               "dead-end": "ATTEMPT REASON", "note": "TEXT", "forget": "ID|TEXT [--all]", "memory": "[--grep RX] [--json]", "savings": "[--top N] [--json]", "dashboard": "[--no-open]", "prune": "[--missing] [--older-than DAYS] [--yes]", "edit": "ID [TEXT] [--reason R]", "compact": "-i GOAL [--from FILE] [--neural]",
-              "stats": "", "mcp": "[--no-run]", "show": "[ID|last] [--lines A-B] [--grep RX] [-C N] [--tail N]", "guide": "[--full] [--raw]", "setup": "[--yes] [--no-test]"}
+              "stats": "", "diff": "[OLD_ID] [NEW_ID] [--json]", "mcp": "[--no-run]", "show": "[ID|last] [--lines A-B] [--grep RX] [-C N] [--tail N]", "guide": "[--full] [--raw]", "setup": "[--yes] [--no-test]"}
 
     def add(name: str, summary: str, examples: list[str], func) -> argparse.ArgumentParser:
         s = sub.add_parser(name, parents=[common], help=summary, description=summary, formatter_class=fmt,
@@ -1707,6 +1876,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-C", "--context", type=int, default=2, help="context lines around matches (default 2)")
     s.add_argument("pattern", help="regex (smart case)")
     s.add_argument("paths", nargs="*", help="files or folders (default: .)")
+
+    s = add("diff", "failures gone, new and still there between two runs (default: the last two runs of a command)",
+            ["ordo diff", "ordo diff 20261126-101500-ab12 20261126-102030-cd34"], cmd_diff)
+    s.add_argument("old", nargs="?", help="raw id of the earlier output")
+    s.add_argument("new", nargs="?", help="raw id of the later output (default: the last run)")
+    s.add_argument("--cwd", default=None, help="repository the outputs refer to (default: current directory)")
 
     s = add("dead-end", "record an approach that failed, so it is not tried again",
             ['ordo dead-end "raised the timeout to 30s" "still hangs: the channel is never closed"'], cmd_dead_end)

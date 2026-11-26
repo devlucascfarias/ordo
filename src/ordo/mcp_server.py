@@ -29,8 +29,9 @@ _SHELL_META = ("|", "&", ";", ">", "<", "$(", "`")
 INSTRUCTIONS = """Ordo condenses tool output into causal data (status, file, line, symbol, error) with a local model.
 - Use ordo_run for tests, builds and linters whose output may be long; `exit` is the command's own exit code.
   Short output is returned unchanged in `text` (route "bypass").
-- `result` holds the parsed output (route "model" or "rule"). Route "rule" means a passing test suite was
-  summarized without the model. Route "fallback" means the model was unavailable and `text` is the original
+- `result` holds the parsed output. Route "index": failures read without the model (causes with links to the
+  source, then failing tests); "rule": a passing suite; "model": the local model condensed it (unknown formats,
+  specific questions, or deep=true). Route "fallback" means the model was unavailable and `text` is the original
   output, windowed around errors: read it as a normal log.
 - Warnings starting with "unverified:" mark citations not found in the input; confirm them with ordo_show
   before acting on them.
@@ -91,8 +92,8 @@ def build_server(allow_run: bool = True) -> MCPServer:
             "running the command directly when output may be long. `exit` is the command's own exit code. "
             "Short output is returned unchanged in `text`. Keep `raw_id` to fetch exact lines with ordo_show."))
         async def ordo_run(command: str, intent: str, cwd: str | None = None,
-                           timeout_seconds: float | None = None) -> dict[str, Any]:
-            argv = ["run", "--json", "-i", intent]
+                           timeout_seconds: float | None = None, deep: bool = False) -> dict[str, Any]:
+            argv = ["run", "--json", "-i", intent] + (["--deep"] if deep else [])
             if cwd:
                 argv += ["--cwd", cwd]
             if timeout_seconds:
@@ -102,12 +103,12 @@ def build_server(allow_run: bool = True) -> MCPServer:
     @server.tool(description=(
         "Filter text you already have (a long log, a CI output, a pasted error) for `intent`. mode: TOOL_OUTPUT "
         "(default) or CODE_SLICE (treat the text as a source file). Returns the same structure as ordo_run."))
-    async def ordo_filter(text: str, intent: str, mode: str = "TOOL_OUTPUT") -> dict[str, Any]:
+    async def ordo_filter(text: str, intent: str, mode: str = "TOOL_OUTPUT", deep: bool = False) -> dict[str, Any]:
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as f:
             f.write(text)
             path = f.name
         try:
-            return await _acall(["filter", "--json", "--mode", mode, "-i", intent, path])
+            return await _acall(["filter", "--json", "--mode", mode, "-i", intent, path] + (["--deep"] if deep else []))
         finally:
             os.unlink(path)
 
@@ -122,6 +123,14 @@ def build_server(allow_run: bool = True) -> MCPServer:
         "(definitions vs. callers, the relevant ones only)."))
     async def ordo_search(pattern: str, intent: str, paths: list[str] | None = None, context: int = 2) -> dict[str, Any]:
         return await _acall(["search", "--json", "-C", str(context), "-i", intent, pattern, *(paths or [])])
+
+    @server.tool(description=(
+        "Compare two runs: failures gone, new and still there (default: the last two runs of the same command). "
+        "Warns when a failure disappeared although none of the files it pointed to changed (a possible symptom fix)."))
+    async def ordo_diff(old_raw_id: str | None = None, new_raw_id: str | None = None,
+                        cwd: str | None = None) -> dict[str, Any]:
+        argv = ["diff", "--json"] + ([old_raw_id] if old_raw_id else []) + ([new_raw_id] if new_raw_id else [])
+        return await _acall(argv + (["--cwd", cwd] if cwd else []))
 
     @server.tool(description=(
         "Print exact lines of a saved ordo_run/ordo_filter/ordo_search output (nothing is lost by filtering). "

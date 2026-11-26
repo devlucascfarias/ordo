@@ -73,9 +73,30 @@ def test_dropped_noise_that_claims_a_failure_is_removed(monkeypatch, capsys, tmp
     monkeypatch.setattr(cli, "call_ordo", _Fake(reply))
     log = tmp_path / "log.txt"
     log.write_text(_monorepo_log(), encoding="utf-8")
-    assert cli.main(["filter", "-i", "why?", str(log), "--json"]) == 0
+    assert cli.main(["filter", "-i", "why?", str(log), "--json", "--deep"]) == 0
     env = json.loads(capsys.readouterr().out)
     assert env["route"] == "model" and "dropped_noise" not in env["result"]
     monkeypatch.setattr(cli, "call_ordo", _Fake(reply.replace("and one unrelated failure in invoices", "only")))
-    assert cli.main(["filter", "-i", "why?", str(log), "--json"]) == 0
+    assert cli.main(["filter", "-i", "why?", str(log), "--json", "--deep"]) == 0
     assert json.loads(capsys.readouterr().out)["result"]["dropped_noise"] == "passing tests only"
+
+
+def test_error_index_and_uncovered_errors():
+    from ordo.textproc import error_index
+    dump = "\n".join(f"  {i}: shader line" for i in range(150, 170))
+    log = "\n".join([
+        "[browser:error] THREE.WebGLProgram: Shader Error 0 - VALIDATE_STATUS false", "FRAGMENT",
+        "ERROR: 0:166: 'pow' : no matching overloaded function found", dump,
+        "[browser:error] THREE.WebGLProgram: Shader Error 0 - VALIDATE_STATUS false",
+        "ERROR: 0:166: 'pow' : no matching overloaded function found", dump,
+        "  x  2 tests/scene.spec.ts:42:1 › the sun core is bright and warm (127ms)",
+        "    Error: Mercurio lit side rgb=5,4,4",
+        "src/orbits.ts(23,73): error TS2339: Property 'radius' does not exist on type 'PlanetSpec'.",
+    ])
+    idx = error_index(log)
+    assert idx.count("ERROR: 0:166: 'pow' : no matching overloaded function found") == 1  # repeated dumps once
+    answer = "summary: 'failed at src/orbits.ts:23 with Mercurio lit side rgb=5,4,4'"
+    left = cli.uncovered_errors(log, answer)
+    assert left[0].startswith("ERROR: 0:166: 'pow'")
+    assert not any("orbits.ts" in l or "Mercurio" in l for l in left)
+    assert any("sun core" in l for l in left)

@@ -29,6 +29,37 @@ def is_error_line(line: str) -> bool:
     return bool(ERROR_HINT.search(ZERO_COUNT.sub("", line)))
 
 
+# headline error lines: the first line of a distinct failure in common tools (not stack frames or code frames)
+HEADLINE = re.compile(
+    r"^(?:\[browser:error\]\s*)?ERROR: \d+:\d+: .+"            # GLSL compiler (WebGL shader errors)
+    r"|^\[browser:error\] .+"                                    # browser console errors forwarded by a test runner
+    r"|^\S+\(\d+,\d+\): error TS\d{4}: .+"                       # tsc
+    r"|^\S+:\d+:\d+ - error TS\d{4}: .+"                         # tsc --pretty
+    r"|^\s*(?:x|✘|×|✖)\s+(?:\d+\s+)?\S+.*›.+"                   # playwright list reporter
+    r"|^\s*Error: .+"                                            # first line of a JS error / failed expect
+    r"|^FAILED \S+.*"                                            # pytest short summary
+    r"|^\s*error(?:\[E\d+\])?: .+"                               # rustc, eslint-like
+    r"|^\s*\S+\.(?:go|java|kt|cs|cpp|c|h):\d+(?::\d+)?: (?:error|fatal).+",
+)
+
+
+def error_index(text: str, limit: int = 8) -> list[str]:
+    """Distinct headline error lines, in order of first appearance (repeated dumps count once)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for line in text.split("\n"):
+        if not HEADLINE.match(line):
+            continue
+        key = re.sub(r"\s+", " ", line.strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(shorten_line(key, 200))
+        if len(out) >= limit:
+            break
+    return out
+
+
 def clean(text: str) -> str:
     """Strip ANSI codes, normalize line breaks and \\r redraws (progress bars)."""
     text = ANSI.sub("", text).replace("\r\n", "\n")

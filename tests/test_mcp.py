@@ -42,8 +42,10 @@ def test_run_tool_returns_envelope_and_show_recovers_original(model):
 def test_filter_tool_calls_model(model):
     model.reply = "status: FAIL\nsummary: boom at a.py:1\ncausal_trace:\n- file: a.py\n  lines: '1'\n  issue: boom"
     log = "\n".join(f"line {i}" for i in range(60)) + "\nTraceback\n  File \"a.py\", line 1\nValueError: boom"
-    env = _call(build_server(), "ordo_filter", {"text": log, "intent": "why?"})
+    env = _call(build_server(), "ordo_filter", {"text": log, "intent": "why?", "deep": True})
     assert env["route"] == "model" and env["result"]["status"] == "FAIL" and model.calls
+    env = _call(build_server(), "ordo_filter", {"text": log, "intent": "why?"})  # recognized: no model
+    assert env["route"] == "index" and env["result"]["causes"][0]["error"] == "ValueError: boom"
 
 
 def test_errors_come_back_as_data(model):

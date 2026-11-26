@@ -235,3 +235,12 @@ def test_rule_skips_when_any_block_failed_or_intent_is_specific():
     assert pass_summary(single, 0, "confirm all tests pass") == "pytest: 12 passed, 3 warnings"
     assert pass_summary(single, 0, "which deprecation warnings appear?") is None
     assert pass_summary(single, 0, "which tests are slow?") is None
+
+
+def test_pass_summary_playwright():
+    ok = _noise(prefix="  ok 1 tests/scene.spec.ts:38:1 › renders") + "\n\n  8 passed (8.6s)\n"
+    assert pass_summary(ok, 0) == "playwright: 8 passed (8.6s)"
+    bad = _noise() + "\n  1 failed\n    tests/a.spec.ts:3:1 › x\n  7 passed (9.0s)\n"
+    assert pass_summary(bad, 0) is None
+    flaky = _noise() + "\n  1 flaky\n  7 passed (9.0s)\n"
+    assert pass_summary(flaky, 0) is None

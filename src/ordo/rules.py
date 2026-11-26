@@ -217,7 +217,22 @@ def _match_unittest(lines: list[str]) -> tuple[int, str | None] | None:
     return last
 
 
+# playwright list/line reporters: "  8 passed (8.6s)"; failures print "  1 failed" (and flaky/interrupted)
+_PW_PASSED = re.compile(r"^\s*(?P<n>\d+) passed \((?P<t>[\d.]+m?s)\)\s*$")
+_PW_BAD = re.compile(r"^\s*\d+ (?:failed|flaky|interrupted|did not run)\b")
+
+
+def _match_playwright(lines: list[str]) -> tuple[int, str | None] | None:
+    last = None
+    for idx, line in enumerate(lines):
+        m = _PW_PASSED.match(line)
+        if m:
+            last = (idx, f"playwright: {m.group('n')} passed ({m.group('t')})")
+    return last
+
+
 _MATCHERS = (
+    _match_playwright,
     _match_pytest,
     _match_node_test,
     _match_jest,
@@ -246,7 +261,7 @@ def _failing_block(lines: list[str]) -> bool:
             return True
         if (_JEST_TESTS.match(line) or _VITEST_TESTS.match(line)) and _NONZERO_FAIL.search(line):
             return True
-        if _GO_FAIL.match(line) or _UNITTEST_FAIL.match(line):
+        if _GO_FAIL.match(line) or _UNITTEST_FAIL.match(line) or _PW_BAD.match(line):
             return True
         m = _CARGO_RESULT.match(line)
         if m and (m.group("status") != "ok" or m.group("failed") != "0"):

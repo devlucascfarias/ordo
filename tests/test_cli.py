@@ -337,7 +337,7 @@ def test_repeated_trace_items_are_collapsed_and_flagged(model, capsys, tmp_path)
     log = tmp_path / "mypy.txt"
     log.write_text("\n".join(f"src/app.py:{n}: error: Incompatible return value type" for n in (12, 30, 41) * 20),
                    encoding="utf-8")
-    code, out = run(capsys, "filter", "-i", "which type errors?", str(log))
+    code, out = run(capsys, "filter", "-i", "which type errors?", str(log), "--deep")
     body = out.split("\n", 1)[1]
     assert code == 0 and body.count("lines: '12'") == 1
     assert "# ordo: repeated output: 4 identical causal_trace item(s) collapsed" in out
@@ -546,7 +546,7 @@ def test_very_long_lines_are_shortened_before_the_model(model, capsys, tmp_path)
     log = tmp_path / "mypy.txt"
     giant = "src/app.py:219: note:     def Popen(" + "x: int = ..., " * 200 + ")"
     log.write_text("\n".join([giant] * 3 + ["src/app.py:12: error: Name 'y' is not defined"] * 40), encoding="utf-8")
-    code, out = run(capsys, "filter", "-i", "which errors?", str(log))
+    code, out = run(capsys, "filter", "-i", "which errors?", str(log), "--deep")
     sent = model.calls[-1]["raw"]
     assert max(len(l) for l in sent.splitlines()) < 900 and "chars omitted" in sent
     assert "3 very long line(s) shortened before the model" in out

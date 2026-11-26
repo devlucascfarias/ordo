@@ -125,11 +125,54 @@ Agents without MCP can call the CLI directly: `ordo guide >> AGENTS.md` adds the
 | `ordo dashboard [--no-open]` | writes a self-contained HTML page with the tokens saved per project and opens it in the browser (no server; nothing leaves the machine) | |
 | `ordo prune [--missing] [--older-than DAYS] [--yes]` | lists every project with recorded memory; removes those whose folder is gone or that are inactive (asks first) | |
 | `ordo show [ID] [--grep RX] [--lines A-B]` | exact lines of a saved run/filter/search output (`raw=<id>` in the header) | |
+| `ordo diff [OLD] [NEW]` | failures gone, new and still there between two runs (default: the last two runs of a command) | |
 | `ordo setup [--yes] [--no-test]` | checks the model server, downloads the model if missing, runs a test call | |
 | `ordo guide` | instructions for coding agents, to paste into `AGENTS.md` | |
 | `ordo mcp [--no-run]` | serve the tools over MCP for any MCP-capable agent | |
 
 Use `--` before the command when it has its own flags that could clash (`ordo run -i "..." -- pytest -v -k foo`).
+
+### How an output is read
+
+Failures are read **deterministically first** when that is safe; the local model answers the rest.
+
+1. **Short output** (≤40 lines) is passed through unchanged (route `bypass`).
+2. **Passing suites** are summarized from the runner's own last line (route `rule`, no model).
+3. **Recognized and pinned-down failures** (route `index`, no model, milliseconds): compiler and linter lines
+   (tsc, rustc, go, javac and Maven, dotnet, gcc, mypy, ruff, ESLint), GLSL shader errors, browser console
+   errors forwarded by Playwright, exceptions with their stack, Python tracebacks, pytest, node:test, jest,
+   vitest, go test, cargo test and rspec failures. Each failure is listed once, causes first and failing tests
+   after, at the project's own code (the innermost own frame, with the test that called it in `called_from`;
+   package-relative paths resolved in the tree), and linked to the source when the repository can tell:
+   - a cascade of tsc errors about one member becomes a single cause at the type's definition, with the field it
+     may have been renamed to;
+   - an undeclared GLSL identifier shows where it is declared and used, under which `#ifdef`, and where that
+     feature is switched on or off (`switch for USE_FRESNEL at src/config/materials.ts:8: fresnel: false`);
+   - NaN errors point to the earlier log lines where NaN first shows up;
+   - a missing asset (404, ENOENT) gets the closest existing file names;
+   - when the question names a part ("only the stock tests"), failures elsewhere move to `other_failures`.
+
+   The index is used only when every cause is located (or linked) and, if the question names something
+   specific (an identifier such as `test_fmt` or a quoted text), one of the failures is about it.
+4. **The model** (route `model`) for everything else: logs nothing above recognizes, failures it cannot pin down,
+   questions about something the failures do not mention, questions about warnings, timing, skips or coverage,
+   or `--deep`. The failures the model leaves out are listed after its answer.
+
+Measured against the model alone (Ordo 3B v2, Q4_K_M), counting the file the answer must cite:
+
+| Set | Model | Ordo 2.4 (index when confident, model otherwise) | Answered without the model |
+|---|---|---|---|
+| 36 held-out validation logs (teacher labels, never used to tune the index) | 83.3% | 77.8% | 83% |
+| 45 failing benchmark cases (human-reviewed labels; part of them used to tune the index) | 86.7% | 95.6% | 76% |
+
+So the gain is mostly speed: three quarters or more of the failing logs come back in milliseconds instead of 5 to
+30 seconds. On logs unlike the ones the index was built on it cites the right file a little less often than the
+model (5 points); use `--deep` when the answer needs the model's reading.
+
+**Between runs.** `ordo run` compares each run with the previous run of the same command (`# ordo: since the
+last run of this command: 2 failure(s) gone, 0 new, 1 still failing`). When a failure disappears although none
+of the files it pointed to changed, it says so: the fix may have hidden the symptom instead of addressing the
+cause. `ordo diff` lists the failures gone, new and still there.
 
 ### Behaviour that agents can rely on
 
@@ -143,8 +186,8 @@ Use `--` before the command when it has its own flags that could clash (`ordo ru
 - **Short output is passed through** without calling the model (≤40 lines); use `--force` to always filter.
 - **Passing suites skip the model.** When a command exits 0 and the runner's own summary reports no failures
   (pytest, node:test, jest, vitest, go test, cargo test, unittest), `run` answers from that line in well under a
-  second (route `rule`). Any failing block in the output, or a question about warnings, timing, skips or
-  coverage, sends it to the model instead.
+  second (route `rule`). Playwright too. Any failing block in the output, or a question about warnings, timing, skips or
+  coverage, goes on to the index or the model.
 - **Monorepo logs.** Lines like `fail 0` do not count as errors, the window keeps the package header
   (`rootdir:`, `> pkg:test`) above each failure, and a package-relative path the model cites gets a note with
   the full path when exactly one file in the tree matches (`# ordo: path: tests/x.test.js is packages/x/...`).
